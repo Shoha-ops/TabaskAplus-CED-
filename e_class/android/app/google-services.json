@@ -1,0 +1,40 @@
+{
+  "project_info": {
+    "project_number": "305429541940",
+    "firebase_url": "https://shaf-a5058-default-rtdb.firebaseio.com",
+    "project_id": "shaf-a5058",
+    "storage_bucket": "shaf-a5058.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:305429541940:android:89a90bd8bad63298270661",
+        "android_client_info": {
+          "package_name": "com.example.e_class"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "305429541940-sqn9dpkstrg8ove9a75j5gus602vvrhh.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAF-Hw6s29rnaj4f5DrXM7zU5qRQvzyu14"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "305429541940-sqn9dpkstrg8ove9a75j5gus602vvrhh.apps.googleusercontent.com",
+              "client_type": 3
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
