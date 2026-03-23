@@ -950,6 +950,71 @@ class _MainScreenState extends State<MainScreen> {
     return List<int>.generate(7, (index) => ((today - 1 + index) % 7) + 1);
   }
 
+  bool _hasRemainingClassesToday(List<_ScheduleEntry> entries) {
+    final now = _nowInTashkent();
+    final today = now.weekday;
+
+    return entries.any((entry) {
+      if (entry.dayIndex != today) return false;
+      final end = _entryEndDateTime(entry, now);
+      return end != null && end.isAfter(now);
+    });
+  }
+
+  List<int> _orderedWeekdaysForTimetable(List<_ScheduleEntry> entries) {
+    final ordered = _orderedWeekdaysFromToday();
+    final today = _nowInTashkent().weekday;
+
+    if (_hasRemainingClassesToday(entries)) {
+      return ordered;
+    }
+
+    if (ordered.isNotEmpty && ordered.first == today) {
+      return [...ordered.skip(1), today];
+    }
+
+    return ordered;
+  }
+
+  Map<int, DateTime> _displayDatesForOrderedWeekdays(
+    List<int> orderedDays, {
+    required bool todayHasRemaining,
+  }) {
+    final now = _nowInTashkent();
+    final startOffset = todayHasRemaining ? 0 : 1;
+    final datesByWeekday = <int, DateTime>{};
+
+    for (var index = 0; index < orderedDays.length; index++) {
+      final date = now.add(Duration(days: startOffset + index));
+      datesByWeekday[orderedDays[index]] = DateTime(
+        date.year,
+        date.month,
+        date.day,
+      );
+    }
+
+    return datesByWeekday;
+  }
+
+  String _weekdayDateLabel(int weekday, {DateTime? date}) {
+    final resolvedDate = date ?? _nowInTashkent();
+    const months = [
+      'Jan',
+      'Feb',
+      'Mar',
+      'Apr',
+      'May',
+      'Jun',
+      'Jul',
+      'Aug',
+      'Sep',
+      'Oct',
+      'Nov',
+      'Dec',
+    ];
+    return '${_weekdayLabel(weekday)} • ${resolvedDate.day.toString().padLeft(2, '0')} ${months[resolvedDate.month - 1]}';
+  }
+
   List<_ScheduleEntry> _todayOrNearestEntries(List<_ScheduleEntry> schedule) {
     final now = _nowInTashkent();
     final todayEntries =
@@ -1077,12 +1142,10 @@ class _MainScreenState extends State<MainScreen> {
     if (entry.dayIndex == now.weekday) {
       final end = _entryEndDateTime(entry, now);
       if (end != null && end.isAfter(now)) {
-        return _isActive(entry.time, dayIndex: entry.dayIndex)
-            ? 'Happening now'
-            : 'Today';
+        return _isActive(entry.time, dayIndex: entry.dayIndex) ? 'Now' : 'Today';
       }
     }
-    return entry.dayLabel;
+    return '';
   }
 
   Widget _buildTimetableScreen() {
@@ -1202,7 +1265,12 @@ class _MainScreenState extends State<MainScreen> {
                     );
                   }
 
-                  final orderedDays = _orderedWeekdaysFromToday();
+                  final todayHasRemaining = _hasRemainingClassesToday(entries);
+                  final orderedDays = _orderedWeekdaysForTimetable(entries);
+                  final displayDates = _displayDatesForOrderedWeekdays(
+                    orderedDays,
+                    todayHasRemaining: todayHasRemaining,
+                  );
                   final entriesByDay = <int, List<_ScheduleEntry>>{};
                   for (final entry in entries) {
                     entriesByDay
@@ -1222,6 +1290,15 @@ class _MainScreenState extends State<MainScreen> {
                       ? null
                       : smartTop.first.dayIndex;
                   final todayWeekday = _nowInTashkent().weekday;
+                  final smartTopDate = smartTopDay == null
+                      ? null
+                      : displayDates[smartTopDay];
+                  final smartTopTitle = smartTop.isEmpty
+                      ? ''
+                      : smartTopDay == todayWeekday
+                      ? 'Today • ${_weekdayDateLabel(todayWeekday, date: smartTopDate)}'
+                      : 'Next Up • ${_weekdayDateLabel(smartTopDay!, date: smartTopDate)}';
+
                   final remainingDays = orderedDays
                       .where((day) => entriesByDay.containsKey(day))
                       .where((day) => smartTopDay == null || day != smartTopDay)
@@ -1271,9 +1348,7 @@ class _MainScreenState extends State<MainScreen> {
                       ),
                       if (smartTop.isNotEmpty) ...[
                         Text(
-                          smartTopDay == todayWeekday
-                              ? 'Today\'s Classes'
-                              : 'Upcoming Classes',
+                          smartTopTitle,
                           style: Theme.of(context).textTheme.titleLarge
                               ?.copyWith(fontWeight: FontWeight.bold),
                         ),
@@ -1294,7 +1369,7 @@ class _MainScreenState extends State<MainScreen> {
                           children: [
                             const SizedBox(height: 4),
                             Text(
-                              _weekdayLabel(day),
+                              _weekdayDateLabel(day, date: displayDates[day]),
                               style: Theme.of(context).textTheme.titleMedium
                                   ?.copyWith(fontWeight: FontWeight.w700),
                             ),
@@ -1403,26 +1478,27 @@ class _MainScreenState extends State<MainScreen> {
         trailing: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-              decoration: BoxDecoration(
-                color: isActive
-                    ? colorScheme.primary.withValues(alpha: 0.15)
-                    : colorScheme.surfaceContainerHighest,
-                borderRadius: BorderRadius.circular(8),
-              ),
-              child: Text(
-                statusLabel,
-                style: TextStyle(
-                  fontSize: 10,
-                  fontWeight: FontWeight.w700,
+            if (statusLabel.isNotEmpty)
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                decoration: BoxDecoration(
                   color: isActive
-                      ? colorScheme.primary
-                      : colorScheme.onSurfaceVariant,
+                      ? colorScheme.primary.withValues(alpha: 0.15)
+                      : colorScheme.surfaceContainerHighest,
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Text(
+                  statusLabel,
+                  style: TextStyle(
+                    fontSize: 10,
+                    fontWeight: FontWeight.w700,
+                    color: isActive
+                        ? colorScheme.primary
+                        : colorScheme.onSurfaceVariant,
+                  ),
                 ),
               ),
-            ),
-            const SizedBox(height: 4),
+            if (statusLabel.isNotEmpty) const SizedBox(height: 4),
             const Icon(Icons.chevron_right_rounded),
           ],
         ),
@@ -4818,3 +4894,4 @@ class _MainScreenState extends State<MainScreen> {
     );
   }
 }
+
