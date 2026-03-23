@@ -1,0 +1,16 @@
+# Logs
+firebase-debug.log*
+firebase-debug.*.log*
+
+# Node modules
+node_modules/
+
+# OS X
+.DS_Store
+
+# Windows
+Thumbs.db
+
+# Env files
+.env
+.env.local
