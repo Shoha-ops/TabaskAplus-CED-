@@ -1,0 +1,24 @@
+/scripts/node_modules/
+/eclass_parser_test/
+
+# Firebase/Admin secrets
+*-firebase-adminsdk-*.json
+*.service-account.json
+
+# Firebase/CLI logs
+firebase-debug.log*
+
+# Local env and temp files
+.env
+.env.*
+*.log
+
+# OS/editor junk
+.DS_Store
+Thumbs.db
+
+# Local import/drop files
+/scripts/*.xlsx
+
+# Not needed in Flutter project root
+/e_class/package-lock.json
