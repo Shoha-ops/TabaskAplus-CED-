@@ -376,16 +376,16 @@ class _SessionGateState extends State<SessionGate> with WidgetsBindingObserver {
 
   String _introSubtitle() {
     const lines = [
-      'A calm start makes the whole day better',
-      'Small steps still move everything forward',
-      'Take a breath and set your pace',
-      'Show up sharp and let the rest follow',
-      'A steady rhythm beats a rushed one',
-      'Some days are for focus, some for momentum',
-      'You are back in your flow',
-      'Make this session count',
-      'Keep it clear, simple and moving',
-      'Start strong and stay light',
+      'Check your next class, deadlines and new updates',
+      'Start with today, then move through your week',
+      'Keep your courses, grades and inbox in one place',
+      'Open your schedule, then jump straight into materials',
+      'Stay on top of deadlines before they become stress',
+      'A quick check now saves time later',
+      'See what changed since your last session',
+      'Find the next thing you need in a tap or two',
+      'Use today view to keep the week under control',
+      'Classes, updates and messages are ready',
     ];
     return lines[_introMessageIndex % lines.length];
   }

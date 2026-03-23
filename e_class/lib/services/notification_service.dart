@@ -194,11 +194,11 @@ class NotificationService {
         );
 
         final String title = isFirstClass
-            ? "Upcoming First Class in 30m"
-            : "Upcoming Class in 5m";
+            ? "First class starts in 30 minutes"
+            : "Class starts in 5 minutes";
 
         final String body =
-            "${cls['subject']} in ${cls['room']} starts at ${cls['hour'].toString().padLeft(2, '0')}:${cls['minute'].toString().padLeft(2, '0')}";
+            "${cls['subject']} • ${cls['room']} • ${cls['hour'].toString().padLeft(2, '0')}:${cls['minute'].toString().padLeft(2, '0')}";
 
         await flutterLocalNotificationsPlugin.zonedSchedule(
           id: notificationId++,

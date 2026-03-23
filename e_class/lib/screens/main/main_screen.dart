@@ -1,4 +1,4 @@
-import 'dart:async';
+﻿import 'dart:async';
 import 'dart:convert';
 import 'dart:ui' as ui;
 
@@ -142,7 +142,13 @@ class _MainScreenState extends State<MainScreen> {
 
   // Notification stream subscription
   StreamSubscription<QuerySnapshot>? _messageSubscription;
+  StreamSubscription<QuerySnapshot>? _gradesSubscription;
+  StreamSubscription<QuerySnapshot>? _subjectUpdatesSubscription;
   String? _notificationListenerUid; // Using String ID for comparison
+  DateTime _lastGradeNotificationTime = DateTime.fromMillisecondsSinceEpoch(0);
+  DateTime _lastSubjectNotificationTime = DateTime.fromMillisecondsSinceEpoch(0);
+  bool _gradeNotificationsPrimed = false;
+  bool _subjectNotificationsPrimed = false;
 
   String timeBasedGreeting() {
     final hour = DateTime.now().hour;
@@ -274,11 +280,142 @@ class _MainScreenState extends State<MainScreen> {
     });
   }
 
+  DateTime? _latestContentTimestamp(Map<String, dynamic> data) {
+    DateTime? latest;
+
+    void consider(dynamic value) {
+      DateTime? parsed;
+      if (value is Timestamp) {
+        parsed = value.toDate();
+      } else if (value is DateTime) {
+        parsed = value;
+      } else if (value is String) {
+        parsed = DateTime.tryParse(value);
+      }
+
+      if (parsed != null && (latest == null || parsed.isAfter(latest!))) {
+        latest = parsed;
+      }
+    }
+
+    for (final key in const ['updatedAt', 'createdAt', 'publishedAt']) {
+      consider(data[key]);
+    }
+
+    for (final collectionKey in const ['announcements', 'materials']) {
+      final raw = data[collectionKey];
+      if (raw is! List) continue;
+      for (final item in raw) {
+        if (item is! Map) continue;
+        consider(item['createdAt']);
+        consider(item['date']);
+        consider(item['publishedAt']);
+      }
+    }
+
+    return latest;
+  }
+
+  void _setupAcademicNotificationListeners(User? user) {
+    if (user == null) {
+      _gradesSubscription?.cancel();
+      _gradesSubscription = null;
+      _subjectUpdatesSubscription?.cancel();
+      _subjectUpdatesSubscription = null;
+      _gradeNotificationsPrimed = false;
+      _subjectNotificationsPrimed = false;
+      return;
+    }
+
+    _gradesSubscription ??= DatabaseService(user: user).grades.listen((snapshot) {
+        DateTime batchMax = _lastGradeNotificationTime;
+
+        for (final doc in snapshot.docs) {
+          final data = doc.data() as Map<String, dynamic>? ?? {};
+          final ts = data['updatedAt'] ?? data['createdAt'];
+          if (ts is! Timestamp) continue;
+          final date = ts.toDate();
+          if (date.isAfter(batchMax)) {
+            batchMax = date;
+          }
+        }
+
+        if (!_gradeNotificationsPrimed) {
+          _lastGradeNotificationTime = batchMax;
+          _gradeNotificationsPrimed = true;
+          return;
+        }
+
+        for (final change in snapshot.docChanges) {
+          if (change.type != DocumentChangeType.added &&
+              change.type != DocumentChangeType.modified) {
+            continue;
+          }
+          final data = change.doc.data() as Map<String, dynamic>? ?? {};
+          final ts = data['updatedAt'] ?? data['createdAt'];
+          if (ts is! Timestamp) continue;
+          final date = ts.toDate();
+          if (!date.isAfter(_lastGradeNotificationTime)) continue;
+          if (_notificationsEnabled) {
+            final subject = (data['subject'] ?? data['subjectCode'] ?? 'Course')
+                .toString()
+                .trim();
+            final grade = (data['grade'] ?? '').toString().trim();
+            NotificationService().showLocalNotification(
+              title: 'Grade updated',
+              body: grade.isEmpty ? subject : '$subject • $grade',
+            );
+          }
+        }
+
+        _lastGradeNotificationTime = batchMax;
+      });
+
+    _subjectUpdatesSubscription ??= FirebaseFirestore.instance
+          .collection('subjects')
+          .snapshots()
+          .listen((snapshot) {
+            DateTime batchMax = _lastSubjectNotificationTime;
+            Map<String, dynamic>? newestData;
+
+            for (final doc in snapshot.docs) {
+              final data = doc.data();
+              final latest = _latestContentTimestamp(data);
+              if (latest != null && latest.isAfter(batchMax)) {
+                batchMax = latest;
+                newestData = data;
+              }
+            }
+
+            if (!_subjectNotificationsPrimed) {
+              _lastSubjectNotificationTime = batchMax;
+              _subjectNotificationsPrimed = true;
+              return;
+            }
+
+            if (newestData != null &&
+                batchMax.isAfter(_lastSubjectNotificationTime) &&
+                _notificationsEnabled) {
+              final subject = (newestData['title'] ?? newestData['code'] ?? 'Course')
+                  .toString()
+                  .trim();
+              NotificationService().showLocalNotification(
+                title: 'New course update',
+                body: subject.isEmpty ? 'Check your latest course changes' : subject,
+              );
+            }
+
+            _lastSubjectNotificationTime = batchMax;
+          });
+  }
+
   @override
   void dispose() {
     _chatController.dispose();
     _clockTickTimer?.cancel();
     _messageSubscription?.cancel();
+    _gradesSubscription?.cancel();
+    _subjectUpdatesSubscription?.cancel();
     super.dispose();
   }
 
@@ -1212,7 +1349,7 @@ class _MainScreenState extends State<MainScreen> {
                       ),
                       const SizedBox(width: 6),
                       Text(
-                        groupName.isEmpty ? 'No Group' : groupName,
+                        groupName.isEmpty ? 'Group not set' : groupName,
                         style: const TextStyle(
                           fontWeight: FontWeight.w700,
                           fontSize: 12,
@@ -1307,45 +1444,6 @@ class _MainScreenState extends State<MainScreen> {
                   return ListView(
                     padding: const EdgeInsets.fromLTRB(16, 16, 16, 112),
                     children: [
-                      Container(
-                        margin: const EdgeInsets.only(bottom: 14),
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 14,
-                          vertical: 12,
-                        ),
-                        decoration: BoxDecoration(
-                          gradient: LinearGradient(
-                            colors: [
-                              colorScheme.primaryContainer.withValues(
-                                alpha: 0.9,
-                              ),
-                              colorScheme.surfaceContainerHigh,
-                            ],
-                            begin: Alignment.topLeft,
-                            end: Alignment.bottomRight,
-                          ),
-                          borderRadius: BorderRadius.circular(16),
-                        ),
-                        child: Row(
-                          children: [
-                            Icon(
-                              Icons.info_outline_rounded,
-                              color: colorScheme.primary,
-                            ),
-                            const SizedBox(width: 10),
-                            Expanded(
-                              child: Text(
-                                'Tap any class to open the subject page with weeks and materials.',
-                                style: TextStyle(
-                                  color: colorScheme.onSurface,
-                                  fontWeight: FontWeight.w600,
-                                  fontSize: 12,
-                                ),
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
                       if (smartTop.isNotEmpty) ...[
                         Text(
                           smartTopTitle,
@@ -2153,17 +2251,24 @@ class _MainScreenState extends State<MainScreen> {
         title: const Text('Notifications'),
         content: Column(
           mainAxisSize: MainAxisSize.min,
-          children: const [
+          children: [
             ListTile(
-              leading: Icon(Icons.class_, color: Colors.blue),
-              title: Text('Schedule Change'),
-              subtitle: Text('System Programming lecture rescheduled.'),
+              leading: const Icon(Icons.schedule_rounded, color: Colors.blue),
+              title: const Text('Class reminders'),
+              subtitle: Text(
+                _notificationsEnabled
+                    ? 'You will get reminders before classes start.'
+                    : 'Class reminders are currently turned off.',
+              ),
             ),
             ListTile(
-              leading: Icon(Icons.warning, color: Colors.orange),
-              title: Text('Deadline Approaching'),
-              subtitle: Text(
-                'Database Systems project submission due tomorrow.',
+              leading: const Icon(
+                Icons.mark_email_unread_outlined,
+                color: Colors.orange,
+              ),
+              title: const Text('Messages and updates'),
+              subtitle: const Text(
+                'New inbox activity appears here as local notifications.',
               ),
             ),
           ],
@@ -3071,10 +3176,7 @@ class _MainScreenState extends State<MainScreen> {
                 padding: const EdgeInsets.only(right: 16),
                 child: IconButton.filledTonal(
                   onPressed: _showNotificationDialog,
-                  icon: Badge(
-                    label: const Text('3'),
-                    child: const Icon(Icons.notifications_outlined),
-                  ),
+                  icon: const Icon(Icons.notifications_outlined),
                 ),
               ),
             ],
@@ -3236,12 +3338,23 @@ class _MainScreenState extends State<MainScreen> {
                                     ),
                                     const SizedBox(height: 16),
                                     Text(
-                                      'No classes today',
+                                      'No classes left for today',
                                       style: TextStyle(
                                         color: Theme.of(
                                           context,
                                         ).colorScheme.onSurfaceVariant,
                                         fontSize: 16,
+                                        fontWeight: FontWeight.w700,
+                                      ),
+                                    ),
+                                    const SizedBox(height: 8),
+                                    Text(
+                                      'Use Timetable to check what is coming next this week.',
+                                      textAlign: TextAlign.center,
+                                      style: TextStyle(
+                                        color: Theme.of(context)
+                                            .colorScheme
+                                            .onSurfaceVariant,
                                       ),
                                     ),
                                   ],
@@ -3272,24 +3385,9 @@ class _MainScreenState extends State<MainScreen> {
                             mainAxisAlignment: MainAxisAlignment.spaceBetween,
                             children: [
                               Text(
-                                'Latest Updates',
+                                'Recent Updates',
                                 style: Theme.of(context).textTheme.titleLarge
                                     ?.copyWith(fontWeight: FontWeight.bold),
-                              ),
-                              TextButton(
-                                onPressed: () {
-                                  ScaffoldMessenger.of(context).showSnackBar(
-                                    const SnackBar(
-                                      content: Text(
-                                        'More announcements coming soon',
-                                      ),
-                                    ),
-                                  );
-                                },
-                                style: TextButton.styleFrom(
-                                  visualDensity: VisualDensity.compact,
-                                ),
-                                child: const Text('See all'),
                               ),
                             ],
                           ),
@@ -4301,12 +4399,22 @@ class _MainScreenState extends State<MainScreen> {
                     Icons.bug_report_outlined,
                     color: Colors.redAccent,
                   ),
-                  title: const Text('Report a Bug'),
+                  title: const Text('Contact Support'),
                   trailing: const Icon(Icons.chevron_right),
                   onTap: () {
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(
-                        content: Text('Report feature coming soon!'),
+                    showDialog(
+                      context: context,
+                      builder: (context) => AlertDialog(
+                        title: const Text('Contact Support'),
+                        content: const Text(
+                          'Need help with a bug or account issue? Contact help@inha.ac.kr or visit the IT center in Building 5.',
+                        ),
+                        actions: [
+                          TextButton(
+                            onPressed: () => Navigator.pop(context),
+                            child: const Text('Close'),
+                          ),
+                        ],
                       ),
                     );
                   },
@@ -4325,7 +4433,7 @@ class _MainScreenState extends State<MainScreen> {
                       context: context,
                       applicationName: 'E-class',
                       applicationVersion: '1.0.0',
-                      applicationLegalese: 'Р вЂ™Р’В© 2026 Inha University',
+                      applicationLegalese: '© 2026 Inha University',
                     );
                   },
                 ),
@@ -4682,10 +4790,42 @@ class _MainScreenState extends State<MainScreen> {
               Expanded(
                 child: threads.isEmpty
                     ? Center(
-                        child: Text(
-                          _selectedInboxTab == 0
-                              ? 'No chats yet'
-                              : 'No mail yet',
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(horizontal: 28),
+                          child: Column(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              Icon(
+                                _selectedInboxTab == 0
+                                    ? Icons.chat_bubble_outline_rounded
+                                    : Icons.mail_outline_rounded,
+                                size: 52,
+                                color: Theme.of(context).colorScheme.outline,
+                              ),
+                              const SizedBox(height: 14),
+                              Text(
+                                _selectedInboxTab == 0
+                                    ? 'No chats yet'
+                                    : 'No mail yet',
+                                style: const TextStyle(
+                                  fontSize: 18,
+                                  fontWeight: FontWeight.w800,
+                                ),
+                              ),
+                              const SizedBox(height: 8),
+                              Text(
+                                _selectedInboxTab == 0
+                                    ? 'Start a conversation with a classmate or professor.'
+                                    : 'Important course emails and replies will show up here.',
+                                textAlign: TextAlign.center,
+                                style: TextStyle(
+                                  color: Theme.of(context)
+                                      .colorScheme
+                                      .onSurfaceVariant,
+                                ),
+                              ),
+                            ],
+                          ),
                         ),
                       )
                     : ListView.separated(
@@ -4795,6 +4935,7 @@ class _MainScreenState extends State<MainScreen> {
     // Ensure the message listener is active when the app is running
     final user = Provider.of<User?>(context);
     _setupMessageListener(user);
+    _setupAcademicNotificationListeners(user);
 
     return Scaffold(
       extendBody: true,
@@ -4894,4 +5035,6 @@ class _MainScreenState extends State<MainScreen> {
     );
   }
 }
+
+
 
