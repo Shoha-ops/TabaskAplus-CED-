@@ -86,6 +86,8 @@ class _EmailThreadPreview {
     required this.message,
     required this.createdAt,
     required this.hasUnread,
+    required this.unreadCount,
+    required this.lastMessageIsMine,
   });
 
   final String threadId;
@@ -95,6 +97,8 @@ class _EmailThreadPreview {
   final String message;
   final Timestamp? createdAt;
   final bool hasUnread;
+  final int unreadCount;
+  final bool lastMessageIsMine;
 }
 
 class _UserAvatarData {
@@ -126,9 +130,37 @@ class MainScreen extends StatefulWidget {
 }
 
 class _MainScreenState extends State<MainScreen> {
+  static const Color _telegramBlue = Color(0xFF5AA9E6);
+  static const Color _telegramBlueDark = Color(0xFF3B8EDB);
+  static const Color _telegramCanvas = Color(0xFFEFF4FA);
+  static const Color _telegramSurface = Color(0xFFFFFFFF);
+  static const Color _telegramMuted = Color(0xFF7B8A9A);
+
+  bool _isDarkMode(BuildContext context) =>
+      Theme.of(context).brightness == Brightness.dark;
+
+  Color _inboxCanvasColor(BuildContext context) =>
+      _isDarkMode(context) ? const Color(0xFF0E1621) : _telegramCanvas;
+
+  Color _inboxSurfaceColor(BuildContext context) =>
+      _isDarkMode(context) ? const Color(0xFF17212B) : _telegramSurface;
+
+  Color _inboxHeaderColor(BuildContext context) =>
+      _isDarkMode(context) ? const Color(0xFF1F6AA5) : _telegramBlue;
+
+  Color _inboxAccentColor(BuildContext context) =>
+      _isDarkMode(context) ? const Color(0xFF6AB3F3) : _telegramBlueDark;
+
+  Color _inboxMutedColor(BuildContext context) =>
+      _isDarkMode(context) ? const Color(0xFF8C9FB3) : _telegramMuted;
+
+  Color _inboxPrimaryTextColor(BuildContext context) =>
+      _isDarkMode(context) ? const Color(0xFFF5F7FA) : const Color(0xFF203040);
+
   int _selectedIndex = 0;
   int _selectedInboxTab = 0;
   final TextEditingController _chatController = TextEditingController();
+  final TextEditingController _inboxSearchController = TextEditingController();
   static const bool _scheduleDebugLogs = true;
   Timer? _clockTickTimer;
   Map<String, _UserAvatarData> _threadAvatarCache = {};
@@ -139,6 +171,7 @@ class _MainScreenState extends State<MainScreen> {
   DateTime _lastMessageTime = DateTime.now();
   DateTime? _serverNow;
   bool _isSyncingServerNow = false;
+  String _inboxQuery = '';
 
   // Notification stream subscription
   StreamSubscription<QuerySnapshot>? _messageSubscription;
@@ -412,6 +445,7 @@ class _MainScreenState extends State<MainScreen> {
   @override
   void dispose() {
     _chatController.dispose();
+    _inboxSearchController.dispose();
     _clockTickTimer?.cancel();
     _messageSubscription?.cancel();
     _gradesSubscription?.cancel();
@@ -2078,7 +2112,8 @@ class _MainScreenState extends State<MainScreen> {
     String currentUserId,
     String channel,
   ) {
-    final threads = <String, _EmailThreadPreview>{};
+    final latestByThread = <String, _EmailThreadPreview>{};
+    final unreadCountByThread = <String, int>{};
 
     for (final doc in docs) {
       final data = doc.data() as Map<String, dynamic>;
@@ -2110,10 +2145,15 @@ class _MainScreenState extends State<MainScreen> {
       final createdAt =
           (data['createdAtClient'] as Timestamp?) ??
           (data['createdAt'] as Timestamp?);
+      final isMine = (data['senderId'] as String?) == currentUserId;
 
-      final current = threads[threadId];
+      if (hasUnread) {
+        unreadCountByThread[threadId] = (unreadCountByThread[threadId] ?? 0) + 1;
+      }
+
+      final current = latestByThread[threadId];
       if (current == null) {
-        threads[threadId] = _EmailThreadPreview(
+        latestByThread[threadId] = _EmailThreadPreview(
           threadId: threadId,
           otherUserId: otherUserId,
           otherUserName: otherUserName,
@@ -2121,37 +2161,49 @@ class _MainScreenState extends State<MainScreen> {
           message: (data['message'] as String?)?.trim() ?? '',
           createdAt: createdAt,
           hasUnread: hasUnread,
+          unreadCount: unreadCountByThread[threadId] ?? 0,
+          lastMessageIsMine: isMine,
         );
         continue;
       }
 
-      threads[threadId] = _EmailThreadPreview(
+      final isLatest =
+          createdAt != null &&
+          (current.createdAt == null ||
+              createdAt.compareTo(current.createdAt!) >= 0);
+
+      latestByThread[threadId] = _EmailThreadPreview(
         threadId: current.threadId,
         otherUserId: current.otherUserId,
         otherUserName: current.otherUserName,
-        subject:
-            createdAt != null &&
-                (current.createdAt == null ||
-                    createdAt.compareTo(current.createdAt!) >= 0)
+        subject: isLatest
             ? ((data['subject'] as String?)?.trim() ?? '')
             : current.subject,
-        message:
-            createdAt != null &&
-                (current.createdAt == null ||
-                    createdAt.compareTo(current.createdAt!) >= 0)
+        message: isLatest
             ? ((data['message'] as String?)?.trim() ?? '')
             : current.message,
-        createdAt:
-            createdAt != null &&
-                (current.createdAt == null ||
-                    createdAt.compareTo(current.createdAt!) >= 0)
-            ? createdAt
-            : current.createdAt,
-        hasUnread: current.hasUnread || hasUnread,
+        createdAt: isLatest ? createdAt : current.createdAt,
+        hasUnread: (unreadCountByThread[threadId] ?? 0) > 0,
+        unreadCount: unreadCountByThread[threadId] ?? current.unreadCount,
+        lastMessageIsMine: isLatest ? isMine : current.lastMessageIsMine,
       );
     }
 
-    final orderedThreads = threads.values.toList()
+    final orderedThreads = latestByThread.values
+        .map(
+          (thread) => _EmailThreadPreview(
+            threadId: thread.threadId,
+            otherUserId: thread.otherUserId,
+            otherUserName: thread.otherUserName,
+            subject: thread.subject,
+            message: thread.message,
+            createdAt: thread.createdAt,
+            hasUnread: (unreadCountByThread[thread.threadId] ?? 0) > 0,
+            unreadCount: unreadCountByThread[thread.threadId] ?? 0,
+            lastMessageIsMine: thread.lastMessageIsMine,
+          ),
+        )
+        .toList()
       ..sort((a, b) {
         if (a.createdAt == null && b.createdAt == null) return 0;
         if (a.createdAt == null) return 1;
@@ -2159,6 +2211,285 @@ class _MainScreenState extends State<MainScreen> {
         return b.createdAt!.compareTo(a.createdAt!);
       });
     return orderedThreads;
+  }
+
+  String _threadTimestampLabel(Timestamp? timestamp) {
+    if (timestamp == null) return '';
+    final date = timestamp.toDate().toLocal();
+    final now = DateTime.now();
+    final today = DateTime(now.year, now.month, now.day);
+    final target = DateTime(date.year, date.month, date.day);
+    final diff = today.difference(target).inDays;
+
+    if (diff == 0) {
+      final hour = date.hour.toString().padLeft(2, '0');
+      final minute = date.minute.toString().padLeft(2, '0');
+      return '$hour:$minute';
+    }
+    if (diff == 1) return 'Yesterday';
+    if (diff < 7) {
+      const days = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+      return days[date.weekday - 1];
+    }
+    return '${date.day}/${date.month}';
+  }
+
+  String _threadPreviewLabel(_EmailThreadPreview thread, bool isChat) {
+    final prefix = thread.lastMessageIsMine ? 'You: ' : '';
+    final base = thread.message.trim();
+    if (base.isNotEmpty) {
+      return '$prefix$base';
+    }
+
+    if (!isChat && thread.subject.trim().isNotEmpty) {
+      return thread.subject.trim();
+    }
+
+    return isChat ? 'Start chatting' : 'Open conversation';
+  }
+
+  bool _threadMatchesInboxQuery(_EmailThreadPreview thread) {
+    final query = _inboxQuery.trim().toLowerCase();
+    if (query.isEmpty) return true;
+
+    final haystack = [
+      thread.otherUserName,
+      thread.subject,
+      thread.message,
+    ].join(' ').toLowerCase();
+
+    return haystack.contains(query);
+  }
+
+  Widget _buildInboxSegment({
+    required String label,
+    required IconData icon,
+    required bool selected,
+    required VoidCallback onTap,
+  }) {
+    final accent = _inboxAccentColor(context);
+    return Expanded(
+      child: GestureDetector(
+        onTap: onTap,
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 180),
+          curve: Curves.easeOut,
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+          decoration: BoxDecoration(
+            color: selected ? Colors.white : Colors.transparent,
+            borderRadius: BorderRadius.circular(18),
+          ),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Icon(
+                icon,
+                size: 18,
+                color: selected ? accent : Colors.white.withValues(alpha: 0.92),
+              ),
+              const SizedBox(width: 8),
+              Text(
+                label,
+                style: TextStyle(
+                  color: selected ? accent : Colors.white.withValues(alpha: 0.92),
+                  fontWeight: selected ? FontWeight.w800 : FontWeight.w700,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildInboxEmptyState(bool isChatTab) {
+    final surface = _inboxSurfaceColor(context);
+    final accent = _inboxAccentColor(context);
+    final muted = _inboxMutedColor(context);
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 30),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Container(
+              width: 82,
+              height: 82,
+              decoration: BoxDecoration(
+                color: surface,
+                shape: BoxShape.circle,
+                boxShadow: [
+                  BoxShadow(
+                    color: accent.withValues(alpha: 0.16),
+                    blurRadius: 24,
+                    offset: const Offset(0, 10),
+                  ),
+                ],
+              ),
+              child: Icon(
+                isChatTab
+                    ? Icons.chat_bubble_outline_rounded
+                    : Icons.mail_outline_rounded,
+                size: 38,
+                color: accent,
+              ),
+            ),
+            const SizedBox(height: 18),
+            Text(
+              _inboxQuery.trim().isNotEmpty
+                  ? 'Nothing found'
+                  : (isChatTab ? 'No chats yet' : 'No mail yet'),
+              style: const TextStyle(
+                fontSize: 20,
+                fontWeight: FontWeight.w800,
+              ),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              _inboxQuery.trim().isNotEmpty
+                  ? 'Try another name or keyword.'
+                  : isChatTab
+                  ? 'Your private conversations will show up here.'
+                  : 'Course mail and replies will appear here.',
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                color: muted,
+                fontSize: 14,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildInboxThreadTile(
+    _EmailThreadPreview thread, {
+    required bool isChatTab,
+  }) {
+    final accent = _inboxAccentColor(context);
+    final muted = _inboxMutedColor(context);
+    final primaryText = _inboxPrimaryTextColor(context);
+    final isUnread = thread.hasUnread;
+    final senderName = thread.otherUserName;
+    final avatarData = _threadAvatarCache[thread.otherUserId];
+    final preview = _threadPreviewLabel(thread, isChatTab);
+    final timeLabel = _threadTimestampLabel(thread.createdAt);
+
+    return InkWell(
+      onTap: () => _showEmailDetails({
+        'threadId': thread.threadId,
+        'otherUserId': thread.otherUserId,
+        'otherUserName': thread.otherUserName,
+        'subject': thread.subject,
+        'channel': isChatTab ? 'chat' : 'mail',
+      }),
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            UserAvatar(
+              avatarId: avatarData?.avatarId,
+              profilePicBase64: avatarData?.profilePicBase64,
+              profilePicUrl: avatarData?.profilePicUrl,
+              displayName: senderName,
+              radius: 28,
+              onTap: () => UserAvatar.showViewer(
+                context,
+                avatarId: avatarData?.avatarId,
+                profilePicBase64: avatarData?.profilePicBase64,
+                profilePicUrl: avatarData?.profilePicUrl,
+                displayName: senderName,
+              ),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Expanded(
+                        child: Text(
+                          senderName,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            fontSize: 16,
+                            fontWeight: isUnread ? FontWeight.w800 : FontWeight.w700,
+                          ),
+                        ),
+                      ),
+                      if (timeLabel.isNotEmpty)
+                        Text(
+                          timeLabel,
+                          style: TextStyle(
+                            fontSize: 12,
+                            fontWeight: isUnread ? FontWeight.w700 : FontWeight.w500,
+                            color: isUnread ? accent : muted,
+                          ),
+                        ),
+                    ],
+                  ),
+                  const SizedBox(height: 5),
+                  Row(
+                    crossAxisAlignment: CrossAxisAlignment.center,
+                    children: [
+                      if (thread.lastMessageIsMine) ...[
+                        Icon(
+                          isUnread ? Icons.done_rounded : Icons.done_all_rounded,
+                          size: 16,
+                          color: isUnread
+                              ? muted
+                              : const Color(0xFF55BDEB),
+                        ),
+                        const SizedBox(width: 4),
+                      ],
+                      Expanded(
+                        child: Text(
+                          preview,
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            color: isUnread ? primaryText : muted,
+                            fontWeight: isUnread ? FontWeight.w600 : FontWeight.w500,
+                            height: 1.2,
+                          ),
+                        ),
+                      ),
+                      if (thread.unreadCount > 0) ...[
+                        const SizedBox(width: 10),
+                        Container(
+                          constraints: const BoxConstraints(minWidth: 24),
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 7,
+                            vertical: 5,
+                          ),
+                          decoration: BoxDecoration(
+                            color: accent,
+                            borderRadius: BorderRadius.circular(999),
+                          ),
+                          child: Text(
+                            '${thread.unreadCount}',
+                            textAlign: TextAlign.center,
+                            style: TextStyle(
+                              color: Colors.white,
+                              fontSize: 11,
+                              fontWeight: FontWeight.w800,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ],
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 
   void _showEmailDetails(Map<String, dynamic> email) {
@@ -4717,23 +5048,21 @@ class _MainScreenState extends State<MainScreen> {
   }
 
   Widget _buildEmailScreen() {
+    final canvas = _inboxCanvasColor(context);
+    final surface = _inboxSurfaceColor(context);
+    final header = _inboxHeaderColor(context);
+    final accent = _inboxAccentColor(context);
     return Scaffold(
-      backgroundColor: Theme.of(context).scaffoldBackgroundColor,
-      appBar: AppBar(
-        title: const Text(
-          'Inbox',
-          style: TextStyle(fontWeight: FontWeight.bold),
-        ),
-        centerTitle: false,
-      ),
+      backgroundColor: canvas,
       floatingActionButton: Padding(
         padding: const EdgeInsets.only(bottom: 118),
-        child: FloatingActionButton(
+        child: FloatingActionButton.large(
           onPressed: _showComposeEmailDialog,
-          backgroundColor: Theme.of(context).colorScheme.primary,
+          backgroundColor: accent,
+          elevation: 3,
           child: Icon(
-            _selectedInboxTab == 0 ? Icons.chat_bubble_rounded : Icons.edit,
-            color: Theme.of(context).colorScheme.onPrimary,
+            _selectedInboxTab == 0 ? Icons.edit_rounded : Icons.mail_rounded,
+            color: Colors.white,
           ),
         ),
       ),
@@ -4756,172 +5085,149 @@ class _MainScreenState extends State<MainScreen> {
           // ... (removed builder side-effect logic)
 
           _ensureThreadAvatarCacheForUser(currentUser.uid);
-          final threads = _buildEmailThreads(
+          final allThreads = _buildEmailThreads(
             snapshot.data!.docs,
             currentUser.uid,
             _selectedInboxTab == 0 ? 'chat' : 'mail',
           );
+          final isChatTab = _selectedInboxTab == 0;
+          final threads = allThreads.where(_threadMatchesInboxQuery).toList();
           _queueThreadAvatarSync(threads);
+
           return Column(
             children: [
-              Padding(
-                padding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
-                child: SegmentedButton<int>(
-                  segments: const [
-                    ButtonSegment<int>(
-                      value: 0,
-                      icon: Icon(Icons.chat_bubble_outline),
-                      label: Text('Chats'),
-                    ),
-                    ButtonSegment<int>(
-                      value: 1,
-                      icon: Icon(Icons.mail_outline),
-                      label: Text('Mail'),
-                    ),
-                  ],
-                  selected: {_selectedInboxTab},
-                  onSelectionChanged: (selection) {
-                    setState(() {
-                      _selectedInboxTab = selection.first;
-                    });
-                  },
+              Container(
+                padding: const EdgeInsets.fromLTRB(16, 20, 16, 16),
+                decoration: BoxDecoration(
+                  color: header,
+                  borderRadius: BorderRadius.only(
+                    bottomLeft: Radius.circular(28),
+                    bottomRight: Radius.circular(28),
+                  ),
+                ),
+                child: SafeArea(
+                  bottom: false,
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text(
+                        'Inbox',
+                        style: TextStyle(
+                          color: Colors.white,
+                          fontSize: 30,
+                          fontWeight: FontWeight.w800,
+                        ),
+                      ),
+                      const SizedBox(height: 14),
+                      Container(
+                        padding: const EdgeInsets.all(4),
+                        decoration: BoxDecoration(
+                          color: Colors.white.withValues(alpha: 0.18),
+                          borderRadius: BorderRadius.circular(22),
+                        ),
+                        child: Row(
+                          children: [
+                            _buildInboxSegment(
+                              label: 'Chats',
+                              icon: Icons.chat_bubble_rounded,
+                              selected: isChatTab,
+                              onTap: () {
+                                if (_selectedInboxTab == 0) return;
+                                setState(() {
+                                  _selectedInboxTab = 0;
+                                  _inboxQuery = '';
+                                  _inboxSearchController.clear();
+                                });
+                              },
+                            ),
+                            _buildInboxSegment(
+                              label: 'Mail',
+                              icon: Icons.mail_rounded,
+                              selected: !isChatTab,
+                              onTap: () {
+                                if (_selectedInboxTab == 1) return;
+                                setState(() {
+                                  _selectedInboxTab = 1;
+                                  _inboxQuery = '';
+                                  _inboxSearchController.clear();
+                                });
+                              },
+                            ),
+                          ],
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+                      Container(
+                        height: 48,
+                        decoration: BoxDecoration(
+                          color: Colors.white.withValues(alpha: 0.96),
+                          borderRadius: BorderRadius.circular(18),
+                        ),
+                        child: TextField(
+                          controller: _inboxSearchController,
+                          onChanged: (value) {
+                            setState(() {
+                              _inboxQuery = value;
+                            });
+                          },
+                          decoration: InputDecoration(
+                            hintText: isChatTab
+                                ? 'Search chats'
+                                : 'Search mail',
+                            prefixIcon: const Icon(Icons.search_rounded),
+                            suffixIcon: _inboxQuery.trim().isEmpty
+                                ? null
+                                : IconButton(
+                                    onPressed: () {
+                                      _inboxSearchController.clear();
+                                      setState(() {
+                                        _inboxQuery = '';
+                                      });
+                                    },
+                                    icon: const Icon(Icons.close_rounded),
+                                  ),
+                            border: InputBorder.none,
+                            contentPadding: const EdgeInsets.symmetric(
+                              horizontal: 4,
+                              vertical: 12,
+                            ),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
                 ),
               ),
               Expanded(
-                child: threads.isEmpty
-                    ? Center(
-                        child: Padding(
-                          padding: const EdgeInsets.symmetric(horizontal: 28),
-                          child: Column(
-                            mainAxisAlignment: MainAxisAlignment.center,
-                            children: [
-                              Icon(
-                                _selectedInboxTab == 0
-                                    ? Icons.chat_bubble_outline_rounded
-                                    : Icons.mail_outline_rounded,
-                                size: 52,
-                                color: Theme.of(context).colorScheme.outline,
-                              ),
-                              const SizedBox(height: 14),
-                              Text(
-                                _selectedInboxTab == 0
-                                    ? 'No chats yet'
-                                    : 'No mail yet',
-                                style: const TextStyle(
-                                  fontSize: 18,
-                                  fontWeight: FontWeight.w800,
-                                ),
-                              ),
-                              const SizedBox(height: 8),
-                              Text(
-                                _selectedInboxTab == 0
-                                    ? 'Start a conversation with a classmate or professor.'
-                                    : 'Important course emails and replies will show up here.',
-                                textAlign: TextAlign.center,
-                                style: TextStyle(
-                                  color: Theme.of(context)
-                                      .colorScheme
-                                      .onSurfaceVariant,
-                                ),
-                              ),
-                            ],
+                child: Container(
+                  margin: const EdgeInsets.only(top: 10),
+                  decoration: BoxDecoration(
+                    color: surface,
+                    borderRadius: BorderRadius.only(
+                      topLeft: Radius.circular(26),
+                      topRight: Radius.circular(26),
+                    ),
+                  ),
+                  child: threads.isEmpty
+                      ? _buildInboxEmptyState(isChatTab)
+                      : ListView.separated(
+                          padding: const EdgeInsets.only(top: 8, bottom: 120),
+                          itemCount: threads.length,
+                          separatorBuilder: (context, index) => Divider(
+                            height: 1,
+                            indent: 84,
+                            endIndent: 16,
+                            color: accent.withValues(alpha: 0.08),
                           ),
+                          itemBuilder: (context, index) {
+                            final thread = threads[index];
+                            return _buildInboxThreadTile(
+                              thread,
+                              isChatTab: isChatTab,
+                            );
+                          },
                         ),
-                      )
-                    : ListView.separated(
-                        padding: const EdgeInsets.only(bottom: 110),
-                        itemCount: threads.length,
-                        separatorBuilder: (c, i) => Divider(
-                          height: 1,
-                          indent:
-                              72, // Align with text start (avatar width + padding)
-                          endIndent: 16,
-                          color: Theme.of(
-                            context,
-                          ).colorScheme.outlineVariant.withValues(alpha: 0.2),
-                        ),
-                        itemBuilder: (context, index) {
-                          final thread = threads[index];
-                          final bool isUnread = thread.hasUnread;
-                          final String senderName = thread.otherUserName;
-                          final avatarData =
-                              _threadAvatarCache[thread.otherUserId];
-                          return ListTile(
-                            contentPadding: const EdgeInsets.symmetric(
-                              horizontal: 20,
-                              vertical: 8,
-                            ),
-                            leading: UserAvatar(
-                              avatarId: avatarData?.avatarId,
-                              profilePicBase64: avatarData?.profilePicBase64,
-                              profilePicUrl: avatarData?.profilePicUrl,
-                              displayName: senderName,
-                              onTap: () => UserAvatar.showViewer(
-                                context,
-                                avatarId: avatarData?.avatarId,
-                                profilePicBase64: avatarData?.profilePicBase64,
-                                profilePicUrl: avatarData?.profilePicUrl,
-                                displayName: senderName,
-                              ),
-                            ),
-                            title: Text(
-                              senderName,
-                              style: TextStyle(
-                                fontWeight: isUnread
-                                    ? FontWeight.bold
-                                    : FontWeight.normal,
-                                fontSize: 16,
-                              ),
-                            ),
-                            subtitle: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                const SizedBox(height: 4),
-                                if (_selectedInboxTab == 1)
-                                  Text(
-                                    thread.subject.isEmpty
-                                        ? 'No subject'
-                                        : thread.subject,
-                                    style: TextStyle(
-                                      color: Theme.of(
-                                        context,
-                                      ).colorScheme.onSurface,
-                                      fontWeight: isUnread
-                                          ? FontWeight.w600
-                                          : FontWeight.normal,
-                                    ),
-                                  ),
-                                Text(
-                                  thread.message,
-                                  maxLines: 1,
-                                  overflow: TextOverflow.ellipsis,
-                                ),
-                              ],
-                            ),
-                            trailing: isUnread
-                                ? Container(
-                                    width: 10,
-                                    height: 10,
-                                    decoration: BoxDecoration(
-                                      color: Theme.of(
-                                        context,
-                                      ).colorScheme.primary,
-                                      shape: BoxShape.circle,
-                                    ),
-                                  )
-                                : null,
-                            onTap: () => _showEmailDetails({
-                              'threadId': thread.threadId,
-                              'otherUserId': thread.otherUserId,
-                              'otherUserName': thread.otherUserName,
-                              'subject': thread.subject,
-                              'channel': _selectedInboxTab == 0
-                                  ? 'chat'
-                                  : 'mail',
-                            }),
-                          );
-                        },
-                      ),
+                ),
               ),
             ],
           );

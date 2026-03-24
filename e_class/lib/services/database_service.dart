@@ -223,6 +223,7 @@ class DatabaseService {
       'createdAt': createdAt,
       'senderUtcOffsetMinutes': senderUtcOffsetMinutes,
       'isUnread': true,
+      'isReadByRecipient': true,
       'type': 'received',
     });
 
@@ -243,6 +244,7 @@ class DatabaseService {
       'createdAt': createdAt,
       'senderUtcOffsetMinutes': senderUtcOffsetMinutes,
       'isUnread': false,
+      'isReadByRecipient': false,
       'type': 'sent',
     });
   }
