@@ -179,7 +179,9 @@ class _MainScreenState extends State<MainScreen> {
   StreamSubscription<QuerySnapshot>? _subjectUpdatesSubscription;
   String? _notificationListenerUid; // Using String ID for comparison
   DateTime _lastGradeNotificationTime = DateTime.fromMillisecondsSinceEpoch(0);
-  DateTime _lastSubjectNotificationTime = DateTime.fromMillisecondsSinceEpoch(0);
+  DateTime _lastSubjectNotificationTime = DateTime.fromMillisecondsSinceEpoch(
+    0,
+  );
   bool _gradeNotificationsPrimed = false;
   bool _subjectNotificationsPrimed = false;
 
@@ -189,6 +191,32 @@ class _MainScreenState extends State<MainScreen> {
     if (hour >= 12 && hour < 18) return 'Good Afternoon,';
     if (hour >= 18 && hour < 21) return 'Good Evening,';
     return 'Good Night,';
+  }
+
+  Widget _buildUniversityEmblem({double size = 22, bool elevated = false}) {
+    final scheme = Theme.of(context).colorScheme;
+    return Container(
+      width: size + 18,
+      height: size + 18,
+      padding: EdgeInsets.all(size < 24 ? 6 : 8),
+      decoration: BoxDecoration(
+        color: Theme.of(context).brightness == Brightness.dark
+            ? const Color(0xFF0F172A)
+            : Colors.white,
+        borderRadius: BorderRadius.circular(999),
+        border: Border.all(color: scheme.primary.withValues(alpha: 0.16)),
+        boxShadow: elevated
+            ? [
+                BoxShadow(
+                  color: scheme.primary.withValues(alpha: 0.12),
+                  blurRadius: 16,
+                  offset: const Offset(0, 6),
+                ),
+              ]
+            : null,
+      ),
+      child: SvgPicture.asset('Icons/Emblem.svg', fit: BoxFit.contain),
+    );
   }
 
   void _logScheduleDebug(String message) {
@@ -360,86 +388,91 @@ class _MainScreenState extends State<MainScreen> {
       return;
     }
 
-    _gradesSubscription ??= DatabaseService(user: user).grades.listen((snapshot) {
-        DateTime batchMax = _lastGradeNotificationTime;
+    _gradesSubscription ??= DatabaseService(user: user).grades.listen((
+      snapshot,
+    ) {
+      DateTime batchMax = _lastGradeNotificationTime;
 
-        for (final doc in snapshot.docs) {
-          final data = doc.data() as Map<String, dynamic>? ?? {};
-          final ts = data['updatedAt'] ?? data['createdAt'];
-          if (ts is! Timestamp) continue;
-          final date = ts.toDate();
-          if (date.isAfter(batchMax)) {
-            batchMax = date;
-          }
+      for (final doc in snapshot.docs) {
+        final data = doc.data() as Map<String, dynamic>? ?? {};
+        final ts = data['updatedAt'] ?? data['createdAt'];
+        if (ts is! Timestamp) continue;
+        final date = ts.toDate();
+        if (date.isAfter(batchMax)) {
+          batchMax = date;
         }
+      }
 
-        if (!_gradeNotificationsPrimed) {
-          _lastGradeNotificationTime = batchMax;
-          _gradeNotificationsPrimed = true;
-          return;
-        }
-
-        for (final change in snapshot.docChanges) {
-          if (change.type != DocumentChangeType.added &&
-              change.type != DocumentChangeType.modified) {
-            continue;
-          }
-          final data = change.doc.data() as Map<String, dynamic>? ?? {};
-          final ts = data['updatedAt'] ?? data['createdAt'];
-          if (ts is! Timestamp) continue;
-          final date = ts.toDate();
-          if (!date.isAfter(_lastGradeNotificationTime)) continue;
-          if (_notificationsEnabled) {
-            final subject = (data['subject'] ?? data['subjectCode'] ?? 'Course')
-                .toString()
-                .trim();
-            final grade = (data['grade'] ?? '').toString().trim();
-            NotificationService().showLocalNotification(
-              title: 'Grade updated',
-              body: grade.isEmpty ? subject : '$subject • $grade',
-            );
-          }
-        }
-
+      if (!_gradeNotificationsPrimed) {
         _lastGradeNotificationTime = batchMax;
-      });
+        _gradeNotificationsPrimed = true;
+        return;
+      }
+
+      for (final change in snapshot.docChanges) {
+        if (change.type != DocumentChangeType.added &&
+            change.type != DocumentChangeType.modified) {
+          continue;
+        }
+        final data = change.doc.data() as Map<String, dynamic>? ?? {};
+        final ts = data['updatedAt'] ?? data['createdAt'];
+        if (ts is! Timestamp) continue;
+        final date = ts.toDate();
+        if (!date.isAfter(_lastGradeNotificationTime)) continue;
+        if (_notificationsEnabled) {
+          final subject = (data['subject'] ?? data['subjectCode'] ?? 'Course')
+              .toString()
+              .trim();
+          final grade = (data['grade'] ?? '').toString().trim();
+          NotificationService().showLocalNotification(
+            title: 'Grade updated',
+            body: grade.isEmpty ? subject : '$subject • $grade',
+          );
+        }
+      }
+
+      _lastGradeNotificationTime = batchMax;
+    });
 
     _subjectUpdatesSubscription ??= FirebaseFirestore.instance
-          .collection('subjects')
-          .snapshots()
-          .listen((snapshot) {
-            DateTime batchMax = _lastSubjectNotificationTime;
-            Map<String, dynamic>? newestData;
+        .collection('subjects')
+        .snapshots()
+        .listen((snapshot) {
+          DateTime batchMax = _lastSubjectNotificationTime;
+          Map<String, dynamic>? newestData;
 
-            for (final doc in snapshot.docs) {
-              final data = doc.data();
-              final latest = _latestContentTimestamp(data);
-              if (latest != null && latest.isAfter(batchMax)) {
-                batchMax = latest;
-                newestData = data;
-              }
+          for (final doc in snapshot.docs) {
+            final data = doc.data();
+            final latest = _latestContentTimestamp(data);
+            if (latest != null && latest.isAfter(batchMax)) {
+              batchMax = latest;
+              newestData = data;
             }
+          }
 
-            if (!_subjectNotificationsPrimed) {
-              _lastSubjectNotificationTime = batchMax;
-              _subjectNotificationsPrimed = true;
-              return;
-            }
-
-            if (newestData != null &&
-                batchMax.isAfter(_lastSubjectNotificationTime) &&
-                _notificationsEnabled) {
-              final subject = (newestData['title'] ?? newestData['code'] ?? 'Course')
-                  .toString()
-                  .trim();
-              NotificationService().showLocalNotification(
-                title: 'New course update',
-                body: subject.isEmpty ? 'Check your latest course changes' : subject,
-              );
-            }
-
+          if (!_subjectNotificationsPrimed) {
             _lastSubjectNotificationTime = batchMax;
-          });
+            _subjectNotificationsPrimed = true;
+            return;
+          }
+
+          if (newestData != null &&
+              batchMax.isAfter(_lastSubjectNotificationTime) &&
+              _notificationsEnabled) {
+            final subject =
+                (newestData['title'] ?? newestData['code'] ?? 'Course')
+                    .toString()
+                    .trim();
+            NotificationService().showLocalNotification(
+              title: 'New course update',
+              body: subject.isEmpty
+                  ? 'Check your latest course changes'
+                  : subject,
+            );
+          }
+
+          _lastSubjectNotificationTime = batchMax;
+        });
   }
 
   @override
@@ -1313,7 +1346,9 @@ class _MainScreenState extends State<MainScreen> {
     if (entry.dayIndex == now.weekday) {
       final end = _entryEndDateTime(entry, now);
       if (end != null && end.isAfter(now)) {
-        return _isActive(entry.time, dayIndex: entry.dayIndex) ? 'Now' : 'Today';
+        return _isActive(entry.time, dayIndex: entry.dayIndex)
+            ? 'Now'
+            : 'Today';
       }
     }
     return '';
@@ -2148,7 +2183,8 @@ class _MainScreenState extends State<MainScreen> {
       final isMine = (data['senderId'] as String?) == currentUserId;
 
       if (hasUnread) {
-        unreadCountByThread[threadId] = (unreadCountByThread[threadId] ?? 0) + 1;
+        unreadCountByThread[threadId] =
+            (unreadCountByThread[threadId] ?? 0) + 1;
       }
 
       final current = latestByThread[threadId];
@@ -2189,27 +2225,28 @@ class _MainScreenState extends State<MainScreen> {
       );
     }
 
-    final orderedThreads = latestByThread.values
-        .map(
-          (thread) => _EmailThreadPreview(
-            threadId: thread.threadId,
-            otherUserId: thread.otherUserId,
-            otherUserName: thread.otherUserName,
-            subject: thread.subject,
-            message: thread.message,
-            createdAt: thread.createdAt,
-            hasUnread: (unreadCountByThread[thread.threadId] ?? 0) > 0,
-            unreadCount: unreadCountByThread[thread.threadId] ?? 0,
-            lastMessageIsMine: thread.lastMessageIsMine,
-          ),
-        )
-        .toList()
-      ..sort((a, b) {
-        if (a.createdAt == null && b.createdAt == null) return 0;
-        if (a.createdAt == null) return 1;
-        if (b.createdAt == null) return -1;
-        return b.createdAt!.compareTo(a.createdAt!);
-      });
+    final orderedThreads =
+        latestByThread.values
+            .map(
+              (thread) => _EmailThreadPreview(
+                threadId: thread.threadId,
+                otherUserId: thread.otherUserId,
+                otherUserName: thread.otherUserName,
+                subject: thread.subject,
+                message: thread.message,
+                createdAt: thread.createdAt,
+                hasUnread: (unreadCountByThread[thread.threadId] ?? 0) > 0,
+                unreadCount: unreadCountByThread[thread.threadId] ?? 0,
+                lastMessageIsMine: thread.lastMessageIsMine,
+              ),
+            )
+            .toList()
+          ..sort((a, b) {
+            if (a.createdAt == null && b.createdAt == null) return 0;
+            if (a.createdAt == null) return 1;
+            if (b.createdAt == null) return -1;
+            return b.createdAt!.compareTo(a.createdAt!);
+          });
     return orderedThreads;
   }
 
@@ -2291,7 +2328,9 @@ class _MainScreenState extends State<MainScreen> {
               Text(
                 label,
                 style: TextStyle(
-                  color: selected ? accent : Colors.white.withValues(alpha: 0.92),
+                  color: selected
+                      ? accent
+                      : Colors.white.withValues(alpha: 0.92),
                   fontWeight: selected ? FontWeight.w800 : FontWeight.w700,
                 ),
               ),
@@ -2339,10 +2378,7 @@ class _MainScreenState extends State<MainScreen> {
               _inboxQuery.trim().isNotEmpty
                   ? 'Nothing found'
                   : (isChatTab ? 'No chats yet' : 'No mail yet'),
-              style: const TextStyle(
-                fontSize: 20,
-                fontWeight: FontWeight.w800,
-              ),
+              style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w800),
             ),
             const SizedBox(height: 8),
             Text(
@@ -2352,10 +2388,7 @@ class _MainScreenState extends State<MainScreen> {
                   ? 'Your private conversations will show up here.'
                   : 'Course mail and replies will appear here.',
               textAlign: TextAlign.center,
-              style: TextStyle(
-                color: muted,
-                fontSize: 14,
-              ),
+              style: TextStyle(color: muted, fontSize: 14),
             ),
           ],
         ),
@@ -2417,7 +2450,9 @@ class _MainScreenState extends State<MainScreen> {
                           overflow: TextOverflow.ellipsis,
                           style: TextStyle(
                             fontSize: 16,
-                            fontWeight: isUnread ? FontWeight.w800 : FontWeight.w700,
+                            fontWeight: isUnread
+                                ? FontWeight.w800
+                                : FontWeight.w700,
                           ),
                         ),
                       ),
@@ -2426,7 +2461,9 @@ class _MainScreenState extends State<MainScreen> {
                           timeLabel,
                           style: TextStyle(
                             fontSize: 12,
-                            fontWeight: isUnread ? FontWeight.w700 : FontWeight.w500,
+                            fontWeight: isUnread
+                                ? FontWeight.w700
+                                : FontWeight.w500,
                             color: isUnread ? accent : muted,
                           ),
                         ),
@@ -2438,11 +2475,11 @@ class _MainScreenState extends State<MainScreen> {
                     children: [
                       if (thread.lastMessageIsMine) ...[
                         Icon(
-                          isUnread ? Icons.done_rounded : Icons.done_all_rounded,
+                          isUnread
+                              ? Icons.done_rounded
+                              : Icons.done_all_rounded,
                           size: 16,
-                          color: isUnread
-                              ? muted
-                              : const Color(0xFF55BDEB),
+                          color: isUnread ? muted : const Color(0xFF55BDEB),
                         ),
                         const SizedBox(width: 4),
                       ],
@@ -2453,7 +2490,9 @@ class _MainScreenState extends State<MainScreen> {
                           overflow: TextOverflow.ellipsis,
                           style: TextStyle(
                             color: isUnread ? primaryText : muted,
-                            fontWeight: isUnread ? FontWeight.w600 : FontWeight.w500,
+                            fontWeight: isUnread
+                                ? FontWeight.w600
+                                : FontWeight.w500,
                             height: 1.2,
                           ),
                         ),
@@ -3683,9 +3722,9 @@ class _MainScreenState extends State<MainScreen> {
                                       'Use Timetable to check what is coming next this week.',
                                       textAlign: TextAlign.center,
                                       style: TextStyle(
-                                        color: Theme.of(context)
-                                            .colorScheme
-                                            .onSurfaceVariant,
+                                        color: Theme.of(
+                                          context,
+                                        ).colorScheme.onSurfaceVariant,
                                       ),
                                     ),
                                   ],
@@ -4708,7 +4747,7 @@ class _MainScreenState extends State<MainScreen> {
                       builder: (context) => AlertDialog(
                         title: const Text('Help Center'),
                         content: const Text(
-                          'For support, please contact help@inha.ac.kr or visit the IT center in Building 5.',
+                          'For support at INHA University in Tashkent, please contact help@inha.ac.kr or visit the IT center in Building 5.',
                         ),
                         actions: [
                           TextButton(
@@ -4738,7 +4777,7 @@ class _MainScreenState extends State<MainScreen> {
                       builder: (context) => AlertDialog(
                         title: const Text('Contact Support'),
                         content: const Text(
-                          'Need help with a bug or account issue? Contact help@inha.ac.kr or visit the IT center in Building 5.',
+                          'Need help with a bug or account issue at INHA University in Tashkent? Contact help@inha.ac.kr or visit the IT center in Building 5.',
                         ),
                         actions: [
                           TextButton(
@@ -4762,9 +4801,13 @@ class _MainScreenState extends State<MainScreen> {
                   onTap: () {
                     showAboutDialog(
                       context: context,
-                      applicationName: 'E-class',
+                      applicationName: 'E-class | INHA University in Tashkent',
                       applicationVersion: '1.0.0',
-                      applicationLegalese: '© 2026 Inha University',
+                      applicationIcon: _buildUniversityEmblem(
+                        size: 52,
+                        elevated: true,
+                      ),
+                      applicationLegalese: '© 2026 INHA University in Tashkent',
                     );
                   },
                 ),
@@ -5341,6 +5384,3 @@ class _MainScreenState extends State<MainScreen> {
     );
   }
 }
-
-
-
