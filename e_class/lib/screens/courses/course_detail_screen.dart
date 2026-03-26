@@ -1,6 +1,7 @@
 ﻿import 'package:cached_network_image/cached_network_image.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:e_class/models/courses/course.dart';
+import 'package:e_class/screens/messages/compose_message_screen.dart';
 import 'package:e_class/services/courses_service.dart';
 import 'package:e_class/services/database_service.dart';
 import 'package:firebase_auth/firebase_auth.dart';
@@ -647,16 +648,42 @@ class _CourseDetailScreenState extends State<CourseDetailScreen> {
     final theme = Theme.of(context);
     return Card(
       margin: const EdgeInsets.fromLTRB(16, 16, 16, 8),
-      child: ListTile(
-        leading: CircleAvatar(
-          backgroundColor: theme.colorScheme.primaryContainer,
-          child: Icon(
-            Icons.school_rounded,
-            color: theme.colorScheme.onPrimaryContainer,
-          ),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(12),
+        onTap: () => _openComposeMail(
+          recipientId: widget.course.professorId,
+          recipientName: widget.course.professorName,
         ),
-        title: Text(widget.course.professorName),
-        subtitle: const Text('Professor'),
+        child: ListTile(
+          leading: CircleAvatar(
+            backgroundColor: theme.colorScheme.primaryContainer,
+            child: Icon(
+              Icons.school_rounded,
+              color: theme.colorScheme.onPrimaryContainer,
+            ),
+          ),
+          title: Text(widget.course.professorName),
+          subtitle: const Text('Professor'),
+          trailing: const Icon(Icons.mail_outline_rounded),
+        ),
+      ),
+    );
+  }
+
+  void _openComposeMail({
+    required String recipientId,
+    required String recipientName,
+  }) {
+    final normalizedName = recipientName.trim();
+    if (normalizedName.isEmpty) return;
+
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => ComposeMessageScreen(
+          initialRecipientId: recipientId.trim().isEmpty ? null : recipientId.trim(),
+          initialRecipientName: normalizedName,
+          isChat: false,
+        ),
       ),
     );
   }
@@ -664,81 +691,89 @@ class _CourseDetailScreenState extends State<CourseDetailScreen> {
   Widget _buildStaffCard(Staff staff, BuildContext context, String roleLabel) {
     return Card(
       margin: const EdgeInsets.fromLTRB(16, 16, 16, 0),
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          children: [
-            Row(
-              children: [
-                CachedNetworkImage(
-                  imageUrl: staff.avatarUrl,
-                  imageBuilder: (context, imageProvider) =>
-                      CircleAvatar(backgroundImage: imageProvider, radius: 24),
-                  placeholder: (context, url) => const CircleAvatar(
-                    radius: 24,
-                    child: CircularProgressIndicator(strokeWidth: 2),
-                  ),
-                  errorWidget: (context, url, error) =>
-                      const CircleAvatar(radius: 24, child: Icon(Icons.person)),
-                ),
-                const SizedBox(width: 16),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        staff.name,
-                        style: const TextStyle(
-                          fontWeight: FontWeight.bold,
-                          fontSize: 16,
-                        ),
-                      ),
-                      Text(
-                        roleLabel,
-                        style: TextStyle(color: Colors.grey[600]),
-                      ),
-                    ],
-                  ),
-                ),
-              ],
-            ),
-            if (staff.officeHours.isNotEmpty) ...[
-              const SizedBox(height: 12),
-              Theme(
-                data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
-                child: ExpansionTile(
-                  tilePadding: EdgeInsets.zero,
-                  title: Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-                    decoration: BoxDecoration(
-                      borderRadius: BorderRadius.circular(12),
-                      border: Border.all(
-                        color: Theme.of(context).colorScheme.outlineVariant,
-                      ),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(12),
+        onTap: () => _openComposeMail(
+          recipientId: staff.id,
+          recipientName: staff.name,
+        ),
+        child: Padding(
+          padding: const EdgeInsets.all(16),
+          child: Column(
+            children: [
+              Row(
+                children: [
+                  CachedNetworkImage(
+                    imageUrl: staff.avatarUrl,
+                    imageBuilder: (context, imageProvider) =>
+                        CircleAvatar(backgroundImage: imageProvider, radius: 24),
+                    placeholder: (context, url) => const CircleAvatar(
+                      radius: 24,
+                      child: CircularProgressIndicator(strokeWidth: 2),
                     ),
-                    child: const Row(
+                    errorWidget: (context, url, error) =>
+                        const CircleAvatar(radius: 24, child: Icon(Icons.person)),
+                  ),
+                  const SizedBox(width: 16),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Icon(Icons.schedule, size: 18),
-                        SizedBox(width: 8),
-                        Text('Office hours'),
+                        Text(
+                          staff.name,
+                          style: const TextStyle(
+                            fontWeight: FontWeight.bold,
+                            fontSize: 16,
+                          ),
+                        ),
+                        Text(
+                          roleLabel,
+                          style: TextStyle(color: Colors.grey[600]),
+                        ),
                       ],
                     ),
                   ),
-                  childrenPadding: const EdgeInsets.only(bottom: 8),
-                  children: staff.officeHours
-                      .map(
-                        (hour) => ListTile(
-                          dense: true,
-                          leading: const Icon(Icons.access_time, size: 18),
-                          title: Text('${hour.day} • ${hour.time}'),
-                          subtitle: Text('Cabinet: ${hour.location}'),
-                        ),
-                      )
-                      .toList(),
-                ),
+                  const Icon(Icons.mail_outline_rounded),
+                ],
               ),
+              if (staff.officeHours.isNotEmpty) ...[
+                const SizedBox(height: 12),
+                Theme(
+                  data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
+                  child: ExpansionTile(
+                    tilePadding: EdgeInsets.zero,
+                    title: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                      decoration: BoxDecoration(
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(
+                          color: Theme.of(context).colorScheme.outlineVariant,
+                        ),
+                      ),
+                      child: const Row(
+                        children: [
+                          Icon(Icons.schedule, size: 18),
+                          SizedBox(width: 8),
+                          Text('Office hours'),
+                        ],
+                      ),
+                    ),
+                    childrenPadding: const EdgeInsets.only(bottom: 8),
+                    children: staff.officeHours
+                        .map(
+                          (hour) => ListTile(
+                            dense: true,
+                            leading: const Icon(Icons.access_time, size: 18),
+                            title: Text('${hour.day} • ${hour.time}'),
+                            subtitle: Text('Cabinet: ${hour.location}'),
+                          ),
+                        )
+                        .toList(),
+                  ),
+                ),
+              ],
             ],
-          ],
+          ),
         ),
       ),
     );

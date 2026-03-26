@@ -1286,6 +1286,42 @@ class _MainScreenState extends State<MainScreen> {
     );
   }
 
+  Course _courseFromTimetableCard(String subject, String professor) {
+    final resolvedSubject = subject.trim().isEmpty ? 'Course' : subject.trim();
+    final courseId = resolvedSubject
+        .toLowerCase()
+        .replaceAll(RegExp(r'[^a-z0-9]+'), '_')
+        .replaceAll(RegExp(r'^_+|_+$'), '');
+
+    final resolvedProfessor =
+        professor.trim().isEmpty ? 'TBA' : professor.trim();
+    final professorId = resolvedProfessor
+        .toLowerCase()
+        .replaceAll(RegExp(r'[^a-z0-9]+'), '_')
+        .replaceAll(RegExp(r'^_+|_+$'), '');
+
+    return Course(
+      id: courseId.isEmpty ? 'course' : courseId,
+      title: resolvedSubject,
+      icon: 'book',
+      professorId: professorId,
+      professorName: resolvedProfessor,
+      semester: 'Spring 2026',
+    );
+  }
+
+  void _openCourseDetails(Course course) {
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => CourseDetailScreen(
+          course: course,
+          currentWeek: _currentAcademicWeek(),
+        ),
+      ),
+    );
+  }
+
   int _currentAcademicWeek() {
     final start = DateTime(2026, 2, 7);
     final diffDays = DateTime.now().difference(start).inDays;
@@ -1670,15 +1706,7 @@ class _MainScreenState extends State<MainScreen> {
           ],
         ),
         onTap: () {
-          Navigator.push(
-            context,
-            MaterialPageRoute(
-              builder: (_) => CourseDetailScreen(
-                course: course,
-                currentWeek: _currentAcademicWeek(),
-              ),
-            ),
-          );
+          _openCourseDetails(course);
         },
       ),
     );
@@ -2820,10 +2848,11 @@ class _MainScreenState extends State<MainScreen> {
     String time,
     String room,
     String professor,
+    Course course,
   ) {
     showModalBottomSheet(
       context: context,
-      builder: (context) => Padding(
+      builder: (sheetContext) => Padding(
         padding: const EdgeInsets.all(24.0),
         child: Column(
           mainAxisSize: MainAxisSize.min,
@@ -2948,17 +2977,33 @@ class _MainScreenState extends State<MainScreen> {
               ],
             ),
             const SizedBox(height: 32),
-            SizedBox(
-              width: double.infinity,
-              child: ElevatedButton(
-                onPressed: () => Navigator.pop(context),
-                style: ElevatedButton.styleFrom(
-                  padding: const EdgeInsets.symmetric(vertical: 16),
-                  backgroundColor: Theme.of(context).colorScheme.primary,
-                  foregroundColor: Theme.of(context).colorScheme.onPrimary,
+            Row(
+              children: [
+                Expanded(
+                  child: OutlinedButton(
+                    onPressed: () => Navigator.pop(sheetContext),
+                    style: OutlinedButton.styleFrom(
+                      padding: const EdgeInsets.symmetric(vertical: 16),
+                    ),
+                    child: const Text('Close'),
+                  ),
                 ),
-                child: const Text('Close'),
-              ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: ElevatedButton(
+                    onPressed: () {
+                      Navigator.pop(sheetContext);
+                      _openCourseDetails(course);
+                    },
+                    style: ElevatedButton.styleFrom(
+                      padding: const EdgeInsets.symmetric(vertical: 16),
+                      backgroundColor: Theme.of(context).colorScheme.primary,
+                      foregroundColor: Theme.of(context).colorScheme.onPrimary,
+                    ),
+                    child: const Text('View course'),
+                  ),
+                ),
+              ],
             ),
           ],
         ),
@@ -3185,8 +3230,9 @@ class _MainScreenState extends State<MainScreen> {
     String time,
     String room,
     String professor,
+    Course course,
   ) {
-    _showTimetableDetails(subject, time, room, professor);
+    _showTimetableDetails(subject, time, room, professor, course);
   }
 
   _ScheduleEntry? _nearestUpcomingEntry(List<_ScheduleEntry> entries) {
@@ -3215,6 +3261,8 @@ class _MainScreenState extends State<MainScreen> {
     bool isActive,
     bool isUpcoming,
   ) {
+    final course = _courseFromTimetableCard(subject, professor);
+
     if (isActive) {
       return Container(
         margin: const EdgeInsets.only(bottom: 12),
@@ -3242,7 +3290,7 @@ class _MainScreenState extends State<MainScreen> {
           color: Colors.transparent,
           child: InkWell(
             borderRadius: BorderRadius.circular(20),
-            onTap: () => _onTimetableTap(subject, time, room, professor),
+            onTap: () => _onTimetableTap(subject, time, room, professor, course),
             child: Padding(
               padding: const EdgeInsets.all(16),
               child: Column(
@@ -3337,7 +3385,7 @@ class _MainScreenState extends State<MainScreen> {
       ),
       child: InkWell(
         borderRadius: BorderRadius.circular(16),
-        onTap: () => _onTimetableTap(subject, time, room, professor),
+        onTap: () => _onTimetableTap(subject, time, room, professor, course),
         child: Padding(
           padding: const EdgeInsets.all(16),
           child: Row(
