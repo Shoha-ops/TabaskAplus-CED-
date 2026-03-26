@@ -4031,8 +4031,8 @@ class _MainScreenState extends State<MainScreen> {
 
                               final groupedUpdates =
                                   subjectGroups.values.toList()..sort((a, b) {
-                                    if (a.latest == null && b.latest == null)
-                                      return 0;
+                                    if (a.latest == null && b.latest == null) return 0;
+                                      
 
                                     if (a.latest == null) return 1;
                                     if (b.latest == null) return -1;
