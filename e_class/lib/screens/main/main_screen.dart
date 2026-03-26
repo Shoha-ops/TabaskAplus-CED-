@@ -1293,8 +1293,9 @@ class _MainScreenState extends State<MainScreen> {
         .replaceAll(RegExp(r'[^a-z0-9]+'), '_')
         .replaceAll(RegExp(r'^_+|_+$'), '');
 
-    final resolvedProfessor =
-        professor.trim().isEmpty ? 'TBA' : professor.trim();
+    final resolvedProfessor = professor.trim().isEmpty
+        ? 'TBA'
+        : professor.trim();
     final professorId = resolvedProfessor
         .toLowerCase()
         .replaceAll(RegExp(r'[^a-z0-9]+'), '_')
@@ -3290,7 +3291,8 @@ class _MainScreenState extends State<MainScreen> {
           color: Colors.transparent,
           child: InkWell(
             borderRadius: BorderRadius.circular(20),
-            onTap: () => _onTimetableTap(subject, time, room, professor, course),
+            onTap: () =>
+                _onTimetableTap(subject, time, room, professor, course),
             child: Padding(
               padding: const EdgeInsets.all(16),
               child: Column(
@@ -4029,8 +4031,8 @@ class _MainScreenState extends State<MainScreen> {
 
                               final groupedUpdates =
                                   subjectGroups.values.toList()..sort((a, b) {
-                                    if (a.latest == null && b.latest == null) return 0;
-                                      
+                                    if (a.latest == null && b.latest == null)
+                                      return 0;
 
                                     if (a.latest == null) return 1;
                                     if (b.latest == null) return -1;

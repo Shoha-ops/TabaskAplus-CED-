@@ -39,7 +39,9 @@ class _CourseDetailScreenState extends State<CourseDetailScreen> {
       final screenWidth = MediaQuery.of(context).size.width;
       const itemWidth = 110.0;
       final target =
-          ((_selectedWeek - 1) * itemWidth) - (screenWidth / 2) + (itemWidth / 2);
+          ((_selectedWeek - 1) * itemWidth) -
+          (screenWidth / 2) +
+          (itemWidth / 2);
       _scrollController.jumpTo(
         target.clamp(0.0, _scrollController.position.maxScrollExtent),
       );
@@ -161,7 +163,11 @@ class _CourseDetailScreenState extends State<CourseDetailScreen> {
   }
 
   String _weekRangeLabel(int weekNum) {
-    final startDate = DateTime(2026, 2, 7).add(Duration(days: (weekNum - 1) * 7));
+    final startDate = DateTime(
+      2026,
+      2,
+      7,
+    ).add(Duration(days: (weekNum - 1) * 7));
     final endDate = startDate.add(const Duration(days: 6));
     final format = DateFormat('d MMM');
     return '${format.format(startDate)} - ${format.format(endDate)}';
@@ -172,16 +178,18 @@ class _CourseDetailScreenState extends State<CourseDetailScreen> {
     if (uri == null || (!uri.isScheme('http') && !uri.isScheme('https'))) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('This material does not have a valid link yet.')),
+        const SnackBar(
+          content: Text('This material does not have a valid link yet.'),
+        ),
       );
       return;
     }
 
     final opened = await launchUrl(uri, mode: LaunchMode.externalApplication);
     if (!opened && mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Could not open this link')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('Could not open this link')));
     }
   }
 
@@ -203,7 +211,9 @@ class _CourseDetailScreenState extends State<CourseDetailScreen> {
             stream: db.scheduleEntriesForGroup(groupName),
             initialData: const <Map<String, dynamic>>[],
             builder: (context, scheduleSnapshot) {
-              final nextClass = _nextClassLabel(scheduleSnapshot.data ?? const []);
+              final nextClass = _nextClassLabel(
+                scheduleSnapshot.data ?? const [],
+              );
 
               return SingleChildScrollView(
                 padding: const EdgeInsets.only(bottom: 32),
@@ -229,9 +239,8 @@ class _CourseDetailScreenState extends State<CourseDetailScreen> {
                         children: [
                           Text(
                             widget.course.title,
-                            style: Theme.of(context).textTheme.headlineSmall?.copyWith(
-                                  fontWeight: FontWeight.w800,
-                                ),
+                            style: Theme.of(context).textTheme.headlineSmall
+                                ?.copyWith(fontWeight: FontWeight.w800),
                           ),
                           const SizedBox(height: 12),
                           Wrap(
@@ -266,7 +275,9 @@ class _CourseDetailScreenState extends State<CourseDetailScreen> {
                         future: _coursesService.getStaff(
                           widget.course.professorId.isNotEmpty
                               ? widget.course.professorId
-                              : _staffDocIdFromName(widget.course.professorName),
+                              : _staffDocIdFromName(
+                                  widget.course.professorName,
+                                ),
                         ),
                         builder: (context, snapshot) {
                           final professor = snapshot.data;
@@ -282,7 +293,8 @@ class _CourseDetailScreenState extends State<CourseDetailScreen> {
                           ];
 
                           final assistantId = professor.assistantId.trim();
-                          if (assistantId.isNotEmpty && assistantId != professor.id) {
+                          if (assistantId.isNotEmpty &&
+                              assistantId != professor.id) {
                             widgets.add(
                               FutureBuilder<Staff?>(
                                 future: _coursesService.getStaff(assistantId),
@@ -322,8 +334,8 @@ class _CourseDetailScreenState extends State<CourseDetailScreen> {
                       child: Text(
                         'Weeks',
                         style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                              fontWeight: FontWeight.w800,
-                            ),
+                          fontWeight: FontWeight.w800,
+                        ),
                       ),
                     ),
                     const SizedBox(height: 10),
@@ -343,7 +355,8 @@ class _CourseDetailScreenState extends State<CourseDetailScreen> {
                             child: ChoiceChip(
                               showCheckmark: false,
                               selected: isSelected,
-                              onSelected: (_) => setState(() => _selectedWeek = weekNum),
+                              onSelected: (_) =>
+                                  setState(() => _selectedWeek = weekNum),
                               label: Column(
                                 mainAxisSize: MainAxisSize.min,
                                 children: [
@@ -377,18 +390,26 @@ class _CourseDetailScreenState extends State<CourseDetailScreen> {
                             _selectedWeek,
                           ),
                           builder: (context, materialsSnapshot) {
-                            final announcements = announcementsSnapshot.data ?? const [];
-                            final materials = materialsSnapshot.data ?? const [];
-                            final datedMaterials = materials
-                                .where((item) => item.deadline != null)
-                                .toList()
-                              ..sort((a, b) => a.deadline!.compareTo(b.deadline!));
+                            final announcements =
+                                announcementsSnapshot.data ?? const [];
+                            final materials =
+                                materialsSnapshot.data ?? const [];
+                            final datedMaterials =
+                                materials
+                                    .where((item) => item.deadline != null)
+                                    .toList()
+                                  ..sort(
+                                    (a, b) =>
+                                        a.deadline!.compareTo(b.deadline!),
+                                  );
                             final nextDeadline = datedMaterials.isEmpty
                                 ? null
                                 : datedMaterials.first.deadline;
 
                             return Padding(
-                              padding: const EdgeInsets.symmetric(horizontal: 16),
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 16,
+                              ),
                               child: Column(
                                 crossAxisAlignment: CrossAxisAlignment.start,
                                 children: [
@@ -422,7 +443,9 @@ class _CourseDetailScreenState extends State<CourseDetailScreen> {
                                   if (announcementsSnapshot.connectionState ==
                                           ConnectionState.waiting &&
                                       !announcementsSnapshot.hasData)
-                                    const Center(child: CircularProgressIndicator())
+                                    const Center(
+                                      child: CircularProgressIndicator(),
+                                    )
                                   else if (announcements.isEmpty)
                                     _buildEmptySection(
                                       context,
@@ -434,9 +457,13 @@ class _CourseDetailScreenState extends State<CourseDetailScreen> {
                                   else
                                     ...announcements.map(
                                       (ann) => Card(
-                                        margin: const EdgeInsets.only(bottom: 10),
+                                        margin: const EdgeInsets.only(
+                                          bottom: 10,
+                                        ),
                                         child: ListTile(
-                                          contentPadding: const EdgeInsets.all(14),
+                                          contentPadding: const EdgeInsets.all(
+                                            14,
+                                          ),
                                           leading: const Icon(
                                             Icons.campaign_rounded,
                                             color: Colors.orange,
@@ -448,7 +475,9 @@ class _CourseDetailScreenState extends State<CourseDetailScreen> {
                                             ),
                                           ),
                                           subtitle: Padding(
-                                            padding: const EdgeInsets.only(top: 6),
+                                            padding: const EdgeInsets.only(
+                                              top: 6,
+                                            ),
                                             child: Text(
                                               ann.content.isEmpty
                                                   ? 'Open course materials and weekly tasks for details.'
@@ -463,7 +492,9 @@ class _CourseDetailScreenState extends State<CourseDetailScreen> {
                                   if (materialsSnapshot.connectionState ==
                                           ConnectionState.waiting &&
                                       !materialsSnapshot.hasData)
-                                    const Center(child: CircularProgressIndicator())
+                                    const Center(
+                                      child: CircularProgressIndicator(),
+                                    )
                                   else if (materials.isEmpty)
                                     _buildEmptySection(
                                       context,
@@ -475,9 +506,13 @@ class _CourseDetailScreenState extends State<CourseDetailScreen> {
                                   else
                                     ...materials.map(
                                       (material) => Card(
-                                        margin: const EdgeInsets.only(bottom: 10),
+                                        margin: const EdgeInsets.only(
+                                          bottom: 10,
+                                        ),
                                         child: ListTile(
-                                          contentPadding: const EdgeInsets.all(14),
+                                          contentPadding: const EdgeInsets.all(
+                                            14,
+                                          ),
                                           leading: Icon(
                                             material.type == 'lecture'
                                                 ? Icons.slideshow_rounded
@@ -502,7 +537,8 @@ class _CourseDetailScreenState extends State<CourseDetailScreen> {
                                           trailing: const Icon(
                                             Icons.open_in_new_rounded,
                                           ),
-                                          onTap: () => _confirmAndOpenUrl(material.url),
+                                          onTap: () =>
+                                              _confirmAndOpenUrl(material.url),
                                         ),
                                       ),
                                     ),
@@ -564,7 +600,9 @@ class _CourseDetailScreenState extends State<CourseDetailScreen> {
       decoration: BoxDecoration(
         color: scheme.surfaceContainerHigh,
         borderRadius: BorderRadius.circular(18),
-        border: Border.all(color: scheme.outlineVariant.withValues(alpha: 0.35)),
+        border: Border.all(
+          color: scheme.outlineVariant.withValues(alpha: 0.35),
+        ),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -601,9 +639,9 @@ class _CourseDetailScreenState extends State<CourseDetailScreen> {
       padding: const EdgeInsets.only(bottom: 10),
       child: Text(
         title,
-        style: Theme.of(context).textTheme.titleMedium?.copyWith(
-              fontWeight: FontWeight.w800,
-            ),
+        style: Theme.of(
+          context,
+        ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w800),
       ),
     );
   }
@@ -622,7 +660,9 @@ class _CourseDetailScreenState extends State<CourseDetailScreen> {
       decoration: BoxDecoration(
         color: scheme.surfaceContainerHighest.withValues(alpha: 0.35),
         borderRadius: BorderRadius.circular(18),
-        border: Border.all(color: scheme.outlineVariant.withValues(alpha: 0.35)),
+        border: Border.all(
+          color: scheme.outlineVariant.withValues(alpha: 0.35),
+        ),
       ),
       child: Column(
         children: [
@@ -680,7 +720,9 @@ class _CourseDetailScreenState extends State<CourseDetailScreen> {
     Navigator.of(context).push(
       MaterialPageRoute(
         builder: (_) => ComposeMessageScreen(
-          initialRecipientId: recipientId.trim().isEmpty ? null : recipientId.trim(),
+          initialRecipientId: recipientId.trim().isEmpty
+              ? null
+              : recipientId.trim(),
           initialRecipientName: normalizedName,
           isChat: false,
         ),
@@ -693,10 +735,8 @@ class _CourseDetailScreenState extends State<CourseDetailScreen> {
       margin: const EdgeInsets.fromLTRB(16, 16, 16, 0),
       child: InkWell(
         borderRadius: BorderRadius.circular(12),
-        onTap: () => _openComposeMail(
-          recipientId: staff.id,
-          recipientName: staff.name,
-        ),
+        onTap: () =>
+            _openComposeMail(recipientId: staff.id, recipientName: staff.name),
         child: Padding(
           padding: const EdgeInsets.all(16),
           child: Column(
@@ -705,14 +745,18 @@ class _CourseDetailScreenState extends State<CourseDetailScreen> {
                 children: [
                   CachedNetworkImage(
                     imageUrl: staff.avatarUrl,
-                    imageBuilder: (context, imageProvider) =>
-                        CircleAvatar(backgroundImage: imageProvider, radius: 24),
+                    imageBuilder: (context, imageProvider) => CircleAvatar(
+                      backgroundImage: imageProvider,
+                      radius: 24,
+                    ),
                     placeholder: (context, url) => const CircleAvatar(
                       radius: 24,
                       child: CircularProgressIndicator(strokeWidth: 2),
                     ),
-                    errorWidget: (context, url, error) =>
-                        const CircleAvatar(radius: 24, child: Icon(Icons.person)),
+                    errorWidget: (context, url, error) => const CircleAvatar(
+                      radius: 24,
+                      child: Icon(Icons.person),
+                    ),
                   ),
                   const SizedBox(width: 16),
                   Expanded(
@@ -739,11 +783,16 @@ class _CourseDetailScreenState extends State<CourseDetailScreen> {
               if (staff.officeHours.isNotEmpty) ...[
                 const SizedBox(height: 12),
                 Theme(
-                  data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
+                  data: Theme.of(
+                    context,
+                  ).copyWith(dividerColor: Colors.transparent),
                   child: ExpansionTile(
                     tilePadding: EdgeInsets.zero,
                     title: Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 12,
+                        vertical: 10,
+                      ),
                       decoration: BoxDecoration(
                         borderRadius: BorderRadius.circular(12),
                         border: Border.all(
@@ -779,4 +828,3 @@ class _CourseDetailScreenState extends State<CourseDetailScreen> {
     );
   }
 }
-
