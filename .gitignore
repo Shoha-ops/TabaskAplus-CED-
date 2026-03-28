@@ -1,5 +1,12 @@
-/scripts/node_modules/
+/scripts/
 /eclass_parser_test/
+
+# IDE/editor workspace files
+.idea/
+**/.idea/
+**/*.iml
+.vscode/*
+!.vscode/extensions.json
 
 # Firebase/Admin secrets
 *-firebase-adminsdk-*.json
@@ -12,13 +19,33 @@ firebase-debug.log*
 .env
 .env.*
 *.log
+*.tmp
+*.temp
 
 # OS/editor junk
 .DS_Store
 Thumbs.db
 
-# Local import/drop files
-/scripts/*.xlsx
+# Flutter/Dart generated
+**/.dart_tool/
+**/.pub/
+**/.pub-cache/
+**/.flutter-plugins
+**/.flutter-plugins-dependencies
+**/.packages
+**/build/
+**/coverage/
+
+# Platform-generated artifacts
+**/.gradle/
+**/android/local.properties
+**/android/captures/
+**/ios/Flutter/ephemeral/
+**/linux/flutter/ephemeral/
+**/macos/Flutter/ephemeral/
+**/windows/flutter/ephemeral/
+**/flutter_export_environment.sh
+**/GeneratedPluginRegistrant.*
 
 # Not needed in Flutter project root
 /e_class/package-lock.json

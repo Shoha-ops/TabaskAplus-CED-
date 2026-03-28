@@ -75,15 +75,38 @@ class _PinSetupWizardState extends State<PinSetupWizard> {
               const Icon(Icons.fingerprint, size: 80, color: Colors.blue),
               const SizedBox(height: 32),
               const Text(
-                'Enable Biometrics?',
+                'Secure your student account',
                 textAlign: TextAlign.center,
                 style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold),
               ),
               const SizedBox(height: 16),
               const Text(
-                'Use your fingerprint or face ID for faster access significantly.',
+                'Use fingerprint or face ID for faster access to your timetable, grades and messages.',
                 textAlign: TextAlign.center,
                 style: TextStyle(fontSize: 16, color: Colors.grey),
+              ),
+              const SizedBox(height: 20),
+              Container(
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  color: Theme.of(context).colorScheme.surfaceContainerHigh,
+                  borderRadius: BorderRadius.circular(20),
+                ),
+                child: const Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'You will use this app for:',
+                      style: TextStyle(fontWeight: FontWeight.w700),
+                    ),
+                    SizedBox(height: 10),
+                    Text('Today: check your next class and updates'),
+                    SizedBox(height: 6),
+                    Text('Courses: open materials and weekly tasks'),
+                    SizedBox(height: 6),
+                    Text('Inbox: stay on top of professor and group messages'),
+                  ],
+                ),
               ),
               const Spacer(),
               FilledButton(

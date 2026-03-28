@@ -3,6 +3,7 @@ import 'package:e_class/screens/auth/lock_screen.dart';
 import 'package:e_class/screens/auth/pin_setup_wizard.dart';
 import 'package:e_class/screens/main/main_screen.dart';
 import 'package:e_class/services/auth_service.dart';
+import 'package:e_class/services/database_service.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_core/firebase_core.dart';
@@ -201,7 +202,7 @@ class _MyAppState extends State<MyApp> {
       initialData: null,
       child: MaterialApp(
         debugShowCheckedModeBanner: false,
-        title: 'E-class',
+        title: 'E-class | INHA University in Tashkent',
         themeMode: _themeMode,
         theme: _buildTheme(_themeColor, Brightness.light),
         darkTheme: _buildTheme(_themeColor, Brightness.dark),
@@ -243,6 +244,8 @@ class _SessionGateState extends State<SessionGate> with WidgetsBindingObserver {
   Timer? _introTimer;
   int _introMessageIndex = 0;
   String? _introFirstName;
+  String _introLoadingStatus = 'Preparing your schedule and updates';
+  bool _isPreloadingIntroData = false;
 
   String _introNameKey(String userId) => 'last_active_name_$userId';
   static const String _lastActiveUidKey = 'last_active_uid';
@@ -375,17 +378,18 @@ class _SessionGateState extends State<SessionGate> with WidgetsBindingObserver {
   }
 
   String _introSubtitle() {
+    if (_isPreloadingIntroData) return _introLoadingStatus;
     const lines = [
-      'A calm start makes the whole day better',
-      'Small steps still move everything forward',
-      'Take a breath and set your pace',
-      'Show up sharp and let the rest follow',
-      'A steady rhythm beats a rushed one',
-      'Some days are for focus, some for momentum',
-      'You are back in your flow',
-      'Make this session count',
-      'Keep it clear, simple and moving',
-      'Start strong and stay light',
+      'Check your next class, deadlines and new updates',
+      'Start with today, then move through your week',
+      'Keep your courses, grades and inbox in one place',
+      'Open your schedule, then jump straight into materials',
+      'Stay on top of deadlines before they become stress',
+      'A quick check now saves time later',
+      'See what changed since your last session',
+      'Find the next thing you need in a tap or two',
+      'Use today view to keep the week under control',
+      'Classes, updates and messages are ready',
     ];
     return lines[_introMessageIndex % lines.length];
   }
@@ -400,13 +404,44 @@ class _SessionGateState extends State<SessionGate> with WidgetsBindingObserver {
       'fullName': FirebaseAuth.instance.currentUser?.displayName ?? '',
     });
     _showIntro = true;
+    _isPreloadingIntroData = true;
+    _introLoadingStatus = 'Preparing your schedule and updates';
     _loadIntroName(userId);
+    unawaited(_runIntroPreload(userId));
+  }
 
-    _introTimer = Timer(const Duration(seconds: 4), () {
-      if (!mounted) return;
-      setState(() {
-        _showIntro = false;
-      });
+  Future<void> _runIntroPreload(String userId) async {
+    final currentUser = FirebaseAuth.instance.currentUser;
+    if (currentUser == null || currentUser.uid != userId) {
+      if (mounted) {
+        setState(() {
+          _showIntro = false;
+          _isPreloadingIntroData = false;
+        });
+      }
+      return;
+    }
+
+    _introTimer?.cancel();
+
+    final minimumDelay = Future<void>.delayed(const Duration(seconds: 4));
+    final preload = DatabaseService(user: currentUser)
+        .preloadEssentialData(
+          onStatus: (status) {
+            if (!mounted || _lastUserId != userId) return;
+            setState(() {
+              _introLoadingStatus = status;
+            });
+          },
+        )
+        .timeout(const Duration(seconds: 10), onTimeout: () {});
+
+    await Future.wait([minimumDelay, preload]);
+
+    if (!mounted || _lastUserId != userId) return;
+    setState(() {
+      _showIntro = false;
+      _isPreloadingIntroData = false;
     });
   }
 
@@ -431,6 +466,9 @@ class _SessionGateState extends State<SessionGate> with WidgetsBindingObserver {
         _isLocked = false;
         _isPinChecked = false;
         _lastUserId = null;
+        _showIntro = true;
+        _isPreloadingIntroData = false;
+        _introLoadingStatus = 'Preparing your schedule and updates';
       }
       return const AuthGate();
     }

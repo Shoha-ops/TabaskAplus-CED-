@@ -184,6 +184,9 @@ class DatabaseService {
     required String subject,
     required String message,
     String channel = 'mail',
+    Timestamp? createdAtClient,
+    String? clientMessageId,
+    Map<String, dynamic>? replyPreview,
   }) async {
     if (user?.uid == null) {
       throw StateError('Current user is missing');
@@ -204,13 +207,23 @@ class DatabaseService {
         : '${(recipientData?['firstName'] as String?)?.trim() ?? ''} ${(recipientData?['lastName'] as String?)?.trim() ?? ''}'
               .trim();
     final threadId = _buildThreadId(user!.uid, recipientUid);
-    final createdAtClient = Timestamp.now();
+    final effectiveCreatedAtClient = createdAtClient ?? Timestamp.now();
     final createdAt = FieldValue.serverTimestamp();
     final senderUtcOffsetMinutes = DateTime.now().timeZoneOffset.inMinutes;
+    final replyData = replyPreview == null
+        ? const <String, dynamic>{}
+        : {
+            'replyToMessageId': replyPreview['messageId'],
+            'replyToText': replyPreview['text'],
+            'replyToSenderId': replyPreview['senderId'],
+            'replyToSenderName': replyPreview['senderName'],
+            'replyToMessageType': replyPreview['messageType'] ?? 'text',
+          };
 
     await users.doc(recipientUid).collection('emails').add({
       'channel': channel,
       'threadId': threadId,
+      'clientMessageId': clientMessageId,
       'senderId': user?.uid,
       'senderName': senderName.isEmpty ? (user?.email ?? '') : senderName,
       'recipientId': recipientUid,
@@ -219,16 +232,21 @@ class DatabaseService {
       'otherUserName': senderName.isEmpty ? (user?.email ?? '') : senderName,
       'subject': subject,
       'message': message,
-      'createdAtClient': createdAtClient,
+      'messageType': 'text',
+      'createdAtClient': effectiveCreatedAtClient,
       'createdAt': createdAt,
       'senderUtcOffsetMinutes': senderUtcOffsetMinutes,
       'isUnread': true,
+      'isReadByRecipient': true,
+      'reactions': const <String, dynamic>{},
       'type': 'received',
+      ...replyData,
     });
 
     await users.doc(user?.uid).collection('emails').add({
       'channel': channel,
       'threadId': threadId,
+      'clientMessageId': clientMessageId,
       'senderId': user?.uid,
       'senderName': senderName.isEmpty ? (user?.email ?? '') : senderName,
       'recipientId': recipientUid,
@@ -239,11 +257,15 @@ class DatabaseService {
           : recipientName,
       'subject': subject,
       'message': message,
-      'createdAtClient': createdAtClient,
+      'messageType': 'text',
+      'createdAtClient': effectiveCreatedAtClient,
       'createdAt': createdAt,
       'senderUtcOffsetMinutes': senderUtcOffsetMinutes,
       'isUnread': false,
+      'isReadByRecipient': false,
+      'reactions': const <String, dynamic>{},
       'type': 'sent',
+      ...replyData,
     });
   }
 
@@ -261,6 +283,60 @@ class DatabaseService {
         .collection('emails')
         .orderBy('createdAt', descending: true)
         .snapshots();
+  }
+
+  Future<void> preloadEssentialData({
+    void Function(String status)? onStatus,
+  }) async {
+    if (user?.uid == null) return;
+
+    void report(String value) {
+      if (onStatus != null) {
+        onStatus(value);
+      }
+    }
+
+    final userRef = users.doc(user!.uid);
+
+    report('Loading your profile');
+    final userSnapshot = await userRef.get();
+    final userData = userSnapshot.data() as Map<String, dynamic>?;
+    final groupName = (userData?['group'] as String?)?.trim().toUpperCase() ?? '';
+
+    final tasks = <Future<void>>[
+      (() async {
+        report('Syncing your subjects');
+        await _db.collection('subjects').limit(250).get();
+      })(),
+      (() async {
+        report('Syncing your grades');
+        await userRef.collection('grades').limit(250).get();
+      })(),
+      (() async {
+        report('Syncing your inbox');
+        await userRef
+            .collection('emails')
+            .orderBy('createdAt', descending: true)
+            .limit(80)
+            .get();
+      })(),
+    ];
+
+    if (groupName.isNotEmpty) {
+      tasks.add(() async {
+        report('Preparing your timetable');
+        final snapshot = await _db
+            .collection('groups')
+            .doc(groupName)
+            .collection('schedule')
+            .get();
+        final entries = _mapScheduleDocs(snapshot.docs);
+        await _writeScheduleCache(groupName, entries);
+      }());
+    }
+
+    await Future.wait(tasks);
+    report('Almost ready');
   }
 
   Future<void> updateEmailMessage({
@@ -304,6 +380,64 @@ class DatabaseService {
       }
     } catch (e) {
       log('Failed to update recipient message copy: $e');
+    }
+  }
+
+  Future<void> toggleMessageReaction({
+    required String messageId,
+    required String recipientId,
+    required String emoji,
+    required Timestamp? createdAtClient,
+  }) async {
+    if (user?.uid == null || createdAtClient == null) return;
+
+    Future<void> toggleOnDoc(DocumentReference reference) async {
+      final snapshot = await reference.get();
+      final data = snapshot.data() as Map<String, dynamic>?;
+      if (data == null) return;
+
+      final rawReactions = data['reactions'];
+      final reactions = <String, List<String>>{};
+      if (rawReactions is Map) {
+        for (final entry in rawReactions.entries) {
+          final key = entry.key.toString();
+          final value = entry.value;
+          if (value is List) {
+            reactions[key] = value.map((item) => item.toString()).toList();
+          }
+        }
+      }
+
+      final usersForEmoji = List<String>.from(reactions[emoji] ?? const <String>[]);
+      if (usersForEmoji.contains(user!.uid)) {
+        usersForEmoji.removeWhere((id) => id == user!.uid);
+      } else {
+        usersForEmoji.add(user!.uid);
+      }
+
+      if (usersForEmoji.isEmpty) {
+        reactions.remove(emoji);
+      } else {
+        reactions[emoji] = usersForEmoji;
+      }
+
+      await reference.update({'reactions': reactions});
+    }
+
+    await toggleOnDoc(users.doc(user!.uid).collection('emails').doc(messageId));
+
+    try {
+      final counterpartQuery = await users
+          .doc(recipientId)
+          .collection('emails')
+          .where('createdAtClient', isEqualTo: createdAtClient)
+          .limit(2)
+          .get();
+      for (final doc in counterpartQuery.docs) {
+        await toggleOnDoc(doc.reference);
+      }
+    } catch (e) {
+      log('Failed to toggle counterpart reaction copy: $e');
     }
   }
 

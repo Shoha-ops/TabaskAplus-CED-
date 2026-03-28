@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:firebase_auth/firebase_auth.dart';
@@ -26,19 +28,29 @@ class _LockScreenState extends State<LockScreen> {
   String _confirmPin = '';
   bool _isConfirming = false;
   bool _showBiometricButton = false;
+  bool _isSubmittingPin = false;
+  bool _isBiometricPromptOpen = false;
   String _status = 'Enter PIN';
 
   @override
   void initState() {
     super.initState();
     if (!widget.isSettingPin) {
-      _refreshBiometricButtonState();
-      _checkBiometrics();
+      unawaited(_initializeBiometrics());
     } else {
       setState(() {
         _status = 'Set new PIN';
       });
     }
+  }
+
+  Future<void> _initializeBiometrics() async {
+    await _refreshBiometricButtonState();
+    if (!mounted) return;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      unawaited(_checkBiometrics(autoPrompt: true));
+    });
   }
 
   Future<void> _refreshBiometricButtonState() async {
@@ -62,43 +74,49 @@ class _LockScreenState extends State<LockScreen> {
     });
   }
 
-  Future<void> _checkBiometrics() async {
-    if (!_showBiometricButton) return;
-
+  Future<void> _checkBiometrics({bool autoPrompt = false}) async {
+    if (_isBiometricPromptOpen) return;
     final prefs = await SharedPreferences.getInstance();
     final bool biometricsEnabled = prefs.getBool('biometrics_enabled') ?? false;
+    if (!biometricsEnabled) return;
 
-    if (biometricsEnabled) {
-      bool canCheckBiometrics = false;
-      try {
-        canCheckBiometrics = await auth.canCheckBiometrics;
-      } catch (e) {
-        // ignore
-      }
+    bool canCheckBiometrics = false;
+    bool isDeviceSupported = false;
+    try {
+      canCheckBiometrics = await auth.canCheckBiometrics;
+      isDeviceSupported = await auth.isDeviceSupported();
+    } catch (_) {
+      canCheckBiometrics = false;
+      isDeviceSupported = false;
+    }
 
-      if (canCheckBiometrics) {
-        try {
-          final bool didAuthenticate = await auth.authenticate(
-            localizedReason: 'Please authenticate to access the app',
-          );
-          if (didAuthenticate) {
-            widget.onAuthenticated();
-          }
-        } catch (_) {
-          // ignore
-        }
+    if (!canCheckBiometrics || !isDeviceSupported) return;
+    if (!_showBiometricButton && !autoPrompt) return;
+
+    _isBiometricPromptOpen = true;
+    try {
+      final bool didAuthenticate = await auth.authenticate(
+        localizedReason: 'Please authenticate to access the app',
+        biometricOnly: true,
+      );
+      if (didAuthenticate && mounted) {
+        widget.onAuthenticated();
       }
+    } catch (_) {
+      // ignore
+    } finally {
+      _isBiometricPromptOpen = false;
     }
   }
 
   void _onKeyPress(String val) {
-    if (_pin.length < 4) {
-      setState(() {
-        _pin += val;
-      });
-      if (_pin.length == 4) {
-        _submitPin();
-      }
+    if (_isSubmittingPin || _pin.length >= 4) return;
+    final nextPin = '$_pin$val';
+    setState(() {
+      _pin = nextPin;
+    });
+    if (nextPin.length == 4) {
+      unawaited(_submitPin());
     }
   }
 
@@ -111,14 +129,18 @@ class _LockScreenState extends State<LockScreen> {
   }
 
   Future<void> _submitPin() async {
+    if (_isSubmittingPin) return;
+    _isSubmittingPin = true;
     if (widget.isSettingPin) {
       if (!_isConfirming) {
-        setState(() {
-          _confirmPin = _pin;
-          _pin = '';
-          _isConfirming = true;
-          _status = 'Confirm PIN';
-        });
+        if (mounted) {
+          setState(() {
+            _confirmPin = _pin;
+            _pin = '';
+            _isConfirming = true;
+            _status = 'Confirm PIN';
+          });
+        }
       } else {
         if (_pin == _confirmPin) {
           await storage.write(key: 'user_pin', value: _pin);
@@ -126,12 +148,14 @@ class _LockScreenState extends State<LockScreen> {
           await prefs.setBool('pin_enabled', true);
           widget.onAuthenticated();
         } else {
-          setState(() {
-            _pin = '';
-            _confirmPin = '';
-            _isConfirming = false;
-            _status = 'PINs do not match. Try again.';
-          });
+          if (mounted) {
+            setState(() {
+              _pin = '';
+              _confirmPin = '';
+              _isConfirming = false;
+              _status = 'PINs do not match. Try again.';
+            });
+          }
         }
       }
     } else {
@@ -139,13 +163,16 @@ class _LockScreenState extends State<LockScreen> {
       if (storedPin == _pin) {
         widget.onAuthenticated();
       } else {
-        setState(() {
-          _pin = '';
-          _status = 'Incorrect PIN';
-        });
+        if (mounted) {
+          setState(() {
+            _pin = '';
+            _status = 'Incorrect PIN';
+          });
+        }
         HapticFeedback.vibrate();
       }
     }
+    _isSubmittingPin = false;
   }
 
   Future<void> _forgetPin() async {
@@ -271,7 +298,7 @@ class _LockScreenState extends State<LockScreen> {
               if (!widget.isSettingPin && _showBiometricButton)
                 _buildActionButton(
                   icon: Icons.fingerprint_rounded,
-                  onTap: _checkBiometrics,
+                  onTap: () => _checkBiometrics(),
                   scheme: scheme,
                 )
               else
@@ -297,12 +324,12 @@ class _LockScreenState extends State<LockScreen> {
   }
 
   Widget _buildKey(String val, ColorScheme scheme) {
-    return InkWell(
-      onTap: () {
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onTapDown: (_) {
         HapticFeedback.lightImpact();
         _onKeyPress(val);
       },
-      borderRadius: BorderRadius.circular(40),
       child: Container(
         width: 72,
         height: 72,
@@ -328,12 +355,12 @@ class _LockScreenState extends State<LockScreen> {
     required VoidCallback onTap,
     required ColorScheme scheme,
   }) {
-    return InkWell(
-      onTap: () {
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onTapDown: (_) {
         HapticFeedback.lightImpact();
         onTap();
       },
-      borderRadius: BorderRadius.circular(40),
       child: Container(
         width: 72,
         height: 72,

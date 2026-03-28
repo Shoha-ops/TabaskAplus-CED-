@@ -1,4 +1,4 @@
-import 'dart:async';
+﻿import 'dart:async';
 import 'dart:convert';
 import 'dart:ui' as ui;
 
@@ -86,6 +86,8 @@ class _EmailThreadPreview {
     required this.message,
     required this.createdAt,
     required this.hasUnread,
+    required this.unreadCount,
+    required this.lastMessageIsMine,
   });
 
   final String threadId;
@@ -95,6 +97,8 @@ class _EmailThreadPreview {
   final String message;
   final Timestamp? createdAt;
   final bool hasUnread;
+  final int unreadCount;
+  final bool lastMessageIsMine;
 }
 
 class _UserAvatarData {
@@ -126,9 +130,37 @@ class MainScreen extends StatefulWidget {
 }
 
 class _MainScreenState extends State<MainScreen> {
+  static const Color _telegramBlue = Color(0xFF5AA9E6);
+  static const Color _telegramBlueDark = Color(0xFF3B8EDB);
+  static const Color _telegramCanvas = Color(0xFFEFF4FA);
+  static const Color _telegramSurface = Color(0xFFFFFFFF);
+  static const Color _telegramMuted = Color(0xFF7B8A9A);
+
+  bool _isDarkMode(BuildContext context) =>
+      Theme.of(context).brightness == Brightness.dark;
+
+  Color _inboxCanvasColor(BuildContext context) =>
+      _isDarkMode(context) ? const Color(0xFF0E1621) : _telegramCanvas;
+
+  Color _inboxSurfaceColor(BuildContext context) =>
+      _isDarkMode(context) ? const Color(0xFF17212B) : _telegramSurface;
+
+  Color _inboxHeaderColor(BuildContext context) =>
+      _isDarkMode(context) ? const Color(0xFF1F6AA5) : _telegramBlue;
+
+  Color _inboxAccentColor(BuildContext context) =>
+      _isDarkMode(context) ? const Color(0xFF6AB3F3) : _telegramBlueDark;
+
+  Color _inboxMutedColor(BuildContext context) =>
+      _isDarkMode(context) ? const Color(0xFF8C9FB3) : _telegramMuted;
+
+  Color _inboxPrimaryTextColor(BuildContext context) =>
+      _isDarkMode(context) ? const Color(0xFFF5F7FA) : const Color(0xFF203040);
+
   int _selectedIndex = 0;
   int _selectedInboxTab = 0;
   final TextEditingController _chatController = TextEditingController();
+  final TextEditingController _inboxSearchController = TextEditingController();
   static const bool _scheduleDebugLogs = true;
   Timer? _clockTickTimer;
   Map<String, _UserAvatarData> _threadAvatarCache = {};
@@ -139,10 +171,19 @@ class _MainScreenState extends State<MainScreen> {
   DateTime _lastMessageTime = DateTime.now();
   DateTime? _serverNow;
   bool _isSyncingServerNow = false;
+  String _inboxQuery = '';
 
   // Notification stream subscription
   StreamSubscription<QuerySnapshot>? _messageSubscription;
+  StreamSubscription<QuerySnapshot>? _gradesSubscription;
+  StreamSubscription<QuerySnapshot>? _subjectUpdatesSubscription;
   String? _notificationListenerUid; // Using String ID for comparison
+  DateTime _lastGradeNotificationTime = DateTime.fromMillisecondsSinceEpoch(0);
+  DateTime _lastSubjectNotificationTime = DateTime.fromMillisecondsSinceEpoch(
+    0,
+  );
+  bool _gradeNotificationsPrimed = false;
+  bool _subjectNotificationsPrimed = false;
 
   String timeBasedGreeting() {
     final hour = DateTime.now().hour;
@@ -150,6 +191,32 @@ class _MainScreenState extends State<MainScreen> {
     if (hour >= 12 && hour < 18) return 'Good Afternoon,';
     if (hour >= 18 && hour < 21) return 'Good Evening,';
     return 'Good Night,';
+  }
+
+  Widget _buildUniversityEmblem({double size = 22, bool elevated = false}) {
+    final scheme = Theme.of(context).colorScheme;
+    return Container(
+      width: size + 18,
+      height: size + 18,
+      padding: EdgeInsets.all(size < 24 ? 6 : 8),
+      decoration: BoxDecoration(
+        color: Theme.of(context).brightness == Brightness.dark
+            ? const Color(0xFF0F172A)
+            : Colors.white,
+        borderRadius: BorderRadius.circular(999),
+        border: Border.all(color: scheme.primary.withValues(alpha: 0.16)),
+        boxShadow: elevated
+            ? [
+                BoxShadow(
+                  color: scheme.primary.withValues(alpha: 0.12),
+                  blurRadius: 16,
+                  offset: const Offset(0, 6),
+                ),
+              ]
+            : null,
+      ),
+      child: SvgPicture.asset('Icons/Emblem.svg', fit: BoxFit.contain),
+    );
   }
 
   void _logScheduleDebug(String message) {
@@ -274,11 +341,148 @@ class _MainScreenState extends State<MainScreen> {
     });
   }
 
+  DateTime? _latestContentTimestamp(Map<String, dynamic> data) {
+    DateTime? latest;
+
+    void consider(dynamic value) {
+      DateTime? parsed;
+      if (value is Timestamp) {
+        parsed = value.toDate();
+      } else if (value is DateTime) {
+        parsed = value;
+      } else if (value is String) {
+        parsed = DateTime.tryParse(value);
+      }
+
+      if (parsed != null && (latest == null || parsed.isAfter(latest!))) {
+        latest = parsed;
+      }
+    }
+
+    for (final key in const ['updatedAt', 'createdAt', 'publishedAt']) {
+      consider(data[key]);
+    }
+
+    for (final collectionKey in const ['announcements', 'materials']) {
+      final raw = data[collectionKey];
+      if (raw is! List) continue;
+      for (final item in raw) {
+        if (item is! Map) continue;
+        consider(item['createdAt']);
+        consider(item['date']);
+        consider(item['publishedAt']);
+      }
+    }
+
+    return latest;
+  }
+
+  void _setupAcademicNotificationListeners(User? user) {
+    if (user == null) {
+      _gradesSubscription?.cancel();
+      _gradesSubscription = null;
+      _subjectUpdatesSubscription?.cancel();
+      _subjectUpdatesSubscription = null;
+      _gradeNotificationsPrimed = false;
+      _subjectNotificationsPrimed = false;
+      return;
+    }
+
+    _gradesSubscription ??= DatabaseService(user: user).grades.listen((
+      snapshot,
+    ) {
+      DateTime batchMax = _lastGradeNotificationTime;
+
+      for (final doc in snapshot.docs) {
+        final data = doc.data() as Map<String, dynamic>? ?? {};
+        final ts = data['updatedAt'] ?? data['createdAt'];
+        if (ts is! Timestamp) continue;
+        final date = ts.toDate();
+        if (date.isAfter(batchMax)) {
+          batchMax = date;
+        }
+      }
+
+      if (!_gradeNotificationsPrimed) {
+        _lastGradeNotificationTime = batchMax;
+        _gradeNotificationsPrimed = true;
+        return;
+      }
+
+      for (final change in snapshot.docChanges) {
+        if (change.type != DocumentChangeType.added &&
+            change.type != DocumentChangeType.modified) {
+          continue;
+        }
+        final data = change.doc.data() as Map<String, dynamic>? ?? {};
+        final ts = data['updatedAt'] ?? data['createdAt'];
+        if (ts is! Timestamp) continue;
+        final date = ts.toDate();
+        if (!date.isAfter(_lastGradeNotificationTime)) continue;
+        if (_notificationsEnabled) {
+          final subject = (data['subject'] ?? data['subjectCode'] ?? 'Course')
+              .toString()
+              .trim();
+          final grade = (data['grade'] ?? '').toString().trim();
+          NotificationService().showLocalNotification(
+            title: 'Grade updated',
+            body: grade.isEmpty ? subject : '$subject • $grade',
+          );
+        }
+      }
+
+      _lastGradeNotificationTime = batchMax;
+    });
+
+    _subjectUpdatesSubscription ??= FirebaseFirestore.instance
+        .collection('subjects')
+        .snapshots()
+        .listen((snapshot) {
+          DateTime batchMax = _lastSubjectNotificationTime;
+          Map<String, dynamic>? newestData;
+
+          for (final doc in snapshot.docs) {
+            final data = doc.data();
+            final latest = _latestContentTimestamp(data);
+            if (latest != null && latest.isAfter(batchMax)) {
+              batchMax = latest;
+              newestData = data;
+            }
+          }
+
+          if (!_subjectNotificationsPrimed) {
+            _lastSubjectNotificationTime = batchMax;
+            _subjectNotificationsPrimed = true;
+            return;
+          }
+
+          if (newestData != null &&
+              batchMax.isAfter(_lastSubjectNotificationTime) &&
+              _notificationsEnabled) {
+            final subject =
+                (newestData['title'] ?? newestData['code'] ?? 'Course')
+                    .toString()
+                    .trim();
+            NotificationService().showLocalNotification(
+              title: 'New course update',
+              body: subject.isEmpty
+                  ? 'Check your latest course changes'
+                  : subject,
+            );
+          }
+
+          _lastSubjectNotificationTime = batchMax;
+        });
+  }
+
   @override
   void dispose() {
     _chatController.dispose();
+    _inboxSearchController.dispose();
     _clockTickTimer?.cancel();
     _messageSubscription?.cancel();
+    _gradesSubscription?.cancel();
+    _subjectUpdatesSubscription?.cancel();
     super.dispose();
   }
 
@@ -950,6 +1154,71 @@ class _MainScreenState extends State<MainScreen> {
     return List<int>.generate(7, (index) => ((today - 1 + index) % 7) + 1);
   }
 
+  bool _hasRemainingClassesToday(List<_ScheduleEntry> entries) {
+    final now = _nowInTashkent();
+    final today = now.weekday;
+
+    return entries.any((entry) {
+      if (entry.dayIndex != today) return false;
+      final end = _entryEndDateTime(entry, now);
+      return end != null && end.isAfter(now);
+    });
+  }
+
+  List<int> _orderedWeekdaysForTimetable(List<_ScheduleEntry> entries) {
+    final ordered = _orderedWeekdaysFromToday();
+    final today = _nowInTashkent().weekday;
+
+    if (_hasRemainingClassesToday(entries)) {
+      return ordered;
+    }
+
+    if (ordered.isNotEmpty && ordered.first == today) {
+      return [...ordered.skip(1), today];
+    }
+
+    return ordered;
+  }
+
+  Map<int, DateTime> _displayDatesForOrderedWeekdays(
+    List<int> orderedDays, {
+    required bool todayHasRemaining,
+  }) {
+    final now = _nowInTashkent();
+    final startOffset = todayHasRemaining ? 0 : 1;
+    final datesByWeekday = <int, DateTime>{};
+
+    for (var index = 0; index < orderedDays.length; index++) {
+      final date = now.add(Duration(days: startOffset + index));
+      datesByWeekday[orderedDays[index]] = DateTime(
+        date.year,
+        date.month,
+        date.day,
+      );
+    }
+
+    return datesByWeekday;
+  }
+
+  String _weekdayDateLabel(int weekday, {DateTime? date}) {
+    final resolvedDate = date ?? _nowInTashkent();
+    const months = [
+      'Jan',
+      'Feb',
+      'Mar',
+      'Apr',
+      'May',
+      'Jun',
+      'Jul',
+      'Aug',
+      'Sep',
+      'Oct',
+      'Nov',
+      'Dec',
+    ];
+    return '${_weekdayLabel(weekday)} • ${resolvedDate.day.toString().padLeft(2, '0')} ${months[resolvedDate.month - 1]}';
+  }
+
   List<_ScheduleEntry> _todayOrNearestEntries(List<_ScheduleEntry> schedule) {
     final now = _nowInTashkent();
     final todayEntries =
@@ -1017,6 +1286,43 @@ class _MainScreenState extends State<MainScreen> {
     );
   }
 
+  Course _courseFromTimetableCard(String subject, String professor) {
+    final resolvedSubject = subject.trim().isEmpty ? 'Course' : subject.trim();
+    final courseId = resolvedSubject
+        .toLowerCase()
+        .replaceAll(RegExp(r'[^a-z0-9]+'), '_')
+        .replaceAll(RegExp(r'^_+|_+$'), '');
+
+    final resolvedProfessor = professor.trim().isEmpty
+        ? 'TBA'
+        : professor.trim();
+    final professorId = resolvedProfessor
+        .toLowerCase()
+        .replaceAll(RegExp(r'[^a-z0-9]+'), '_')
+        .replaceAll(RegExp(r'^_+|_+$'), '');
+
+    return Course(
+      id: courseId.isEmpty ? 'course' : courseId,
+      title: resolvedSubject,
+      icon: 'book',
+      professorId: professorId,
+      professorName: resolvedProfessor,
+      semester: 'Spring 2026',
+    );
+  }
+
+  void _openCourseDetails(Course course) {
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => CourseDetailScreen(
+          course: course,
+          currentWeek: _currentAcademicWeek(),
+        ),
+      ),
+    );
+  }
+
   int _currentAcademicWeek() {
     final start = DateTime(2026, 2, 7);
     final diffDays = DateTime.now().difference(start).inDays;
@@ -1078,11 +1384,11 @@ class _MainScreenState extends State<MainScreen> {
       final end = _entryEndDateTime(entry, now);
       if (end != null && end.isAfter(now)) {
         return _isActive(entry.time, dayIndex: entry.dayIndex)
-            ? 'Happening now'
+            ? 'Now'
             : 'Today';
       }
     }
-    return entry.dayLabel;
+    return '';
   }
 
   Widget _buildTimetableScreen() {
@@ -1149,7 +1455,7 @@ class _MainScreenState extends State<MainScreen> {
                       ),
                       const SizedBox(width: 6),
                       Text(
-                        groupName.isEmpty ? 'No Group' : groupName,
+                        groupName.isEmpty ? 'Group not set' : groupName,
                         style: const TextStyle(
                           fontWeight: FontWeight.w700,
                           fontSize: 12,
@@ -1202,7 +1508,12 @@ class _MainScreenState extends State<MainScreen> {
                     );
                   }
 
-                  final orderedDays = _orderedWeekdaysFromToday();
+                  final todayHasRemaining = _hasRemainingClassesToday(entries);
+                  final orderedDays = _orderedWeekdaysForTimetable(entries);
+                  final displayDates = _displayDatesForOrderedWeekdays(
+                    orderedDays,
+                    todayHasRemaining: todayHasRemaining,
+                  );
                   final entriesByDay = <int, List<_ScheduleEntry>>{};
                   for (final entry in entries) {
                     entriesByDay
@@ -1222,6 +1533,15 @@ class _MainScreenState extends State<MainScreen> {
                       ? null
                       : smartTop.first.dayIndex;
                   final todayWeekday = _nowInTashkent().weekday;
+                  final smartTopDate = smartTopDay == null
+                      ? null
+                      : displayDates[smartTopDay];
+                  final smartTopTitle = smartTop.isEmpty
+                      ? ''
+                      : smartTopDay == todayWeekday
+                      ? 'Today • ${_weekdayDateLabel(todayWeekday, date: smartTopDate)}'
+                      : 'Next Up • ${_weekdayDateLabel(smartTopDay!, date: smartTopDate)}';
+
                   final remainingDays = orderedDays
                       .where((day) => entriesByDay.containsKey(day))
                       .where((day) => smartTopDay == null || day != smartTopDay)
@@ -1230,50 +1550,9 @@ class _MainScreenState extends State<MainScreen> {
                   return ListView(
                     padding: const EdgeInsets.fromLTRB(16, 16, 16, 112),
                     children: [
-                      Container(
-                        margin: const EdgeInsets.only(bottom: 14),
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 14,
-                          vertical: 12,
-                        ),
-                        decoration: BoxDecoration(
-                          gradient: LinearGradient(
-                            colors: [
-                              colorScheme.primaryContainer.withValues(
-                                alpha: 0.9,
-                              ),
-                              colorScheme.surfaceContainerHigh,
-                            ],
-                            begin: Alignment.topLeft,
-                            end: Alignment.bottomRight,
-                          ),
-                          borderRadius: BorderRadius.circular(16),
-                        ),
-                        child: Row(
-                          children: [
-                            Icon(
-                              Icons.info_outline_rounded,
-                              color: colorScheme.primary,
-                            ),
-                            const SizedBox(width: 10),
-                            Expanded(
-                              child: Text(
-                                'Tap any class to open the subject page with weeks and materials.',
-                                style: TextStyle(
-                                  color: colorScheme.onSurface,
-                                  fontWeight: FontWeight.w600,
-                                  fontSize: 12,
-                                ),
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
                       if (smartTop.isNotEmpty) ...[
                         Text(
-                          smartTopDay == todayWeekday
-                              ? 'Today\'s Classes'
-                              : 'Upcoming Classes',
+                          smartTopTitle,
                           style: Theme.of(context).textTheme.titleLarge
                               ?.copyWith(fontWeight: FontWeight.bold),
                         ),
@@ -1294,7 +1573,7 @@ class _MainScreenState extends State<MainScreen> {
                           children: [
                             const SizedBox(height: 4),
                             Text(
-                              _weekdayLabel(day),
+                              _weekdayDateLabel(day, date: displayDates[day]),
                               style: Theme.of(context).textTheme.titleMedium
                                   ?.copyWith(fontWeight: FontWeight.w700),
                             ),
@@ -1403,39 +1682,32 @@ class _MainScreenState extends State<MainScreen> {
         trailing: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-              decoration: BoxDecoration(
-                color: isActive
-                    ? colorScheme.primary.withValues(alpha: 0.15)
-                    : colorScheme.surfaceContainerHighest,
-                borderRadius: BorderRadius.circular(8),
-              ),
-              child: Text(
-                statusLabel,
-                style: TextStyle(
-                  fontSize: 10,
-                  fontWeight: FontWeight.w700,
+            if (statusLabel.isNotEmpty)
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                decoration: BoxDecoration(
                   color: isActive
-                      ? colorScheme.primary
-                      : colorScheme.onSurfaceVariant,
+                      ? colorScheme.primary.withValues(alpha: 0.15)
+                      : colorScheme.surfaceContainerHighest,
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Text(
+                  statusLabel,
+                  style: TextStyle(
+                    fontSize: 10,
+                    fontWeight: FontWeight.w700,
+                    color: isActive
+                        ? colorScheme.primary
+                        : colorScheme.onSurfaceVariant,
+                  ),
                 ),
               ),
-            ),
-            const SizedBox(height: 4),
+            if (statusLabel.isNotEmpty) const SizedBox(height: 4),
             const Icon(Icons.chevron_right_rounded),
           ],
         ),
         onTap: () {
-          Navigator.push(
-            context,
-            MaterialPageRoute(
-              builder: (_) => CourseDetailScreen(
-                course: course,
-                currentWeek: _currentAcademicWeek(),
-              ),
-            ),
-          );
+          _openCourseDetails(course);
         },
       ),
     );
@@ -1904,7 +2176,8 @@ class _MainScreenState extends State<MainScreen> {
     String currentUserId,
     String channel,
   ) {
-    final threads = <String, _EmailThreadPreview>{};
+    final latestByThread = <String, _EmailThreadPreview>{};
+    final unreadCountByThread = <String, int>{};
 
     for (final doc in docs) {
       final data = doc.data() as Map<String, dynamic>;
@@ -1936,10 +2209,16 @@ class _MainScreenState extends State<MainScreen> {
       final createdAt =
           (data['createdAtClient'] as Timestamp?) ??
           (data['createdAt'] as Timestamp?);
+      final isMine = (data['senderId'] as String?) == currentUserId;
 
-      final current = threads[threadId];
+      if (hasUnread) {
+        unreadCountByThread[threadId] =
+            (unreadCountByThread[threadId] ?? 0) + 1;
+      }
+
+      final current = latestByThread[threadId];
       if (current == null) {
-        threads[threadId] = _EmailThreadPreview(
+        latestByThread[threadId] = _EmailThreadPreview(
           threadId: threadId,
           otherUserId: otherUserId,
           otherUserName: otherUserName,
@@ -1947,44 +2226,338 @@ class _MainScreenState extends State<MainScreen> {
           message: (data['message'] as String?)?.trim() ?? '',
           createdAt: createdAt,
           hasUnread: hasUnread,
+          unreadCount: unreadCountByThread[threadId] ?? 0,
+          lastMessageIsMine: isMine,
         );
         continue;
       }
 
-      threads[threadId] = _EmailThreadPreview(
+      final isLatest =
+          createdAt != null &&
+          (current.createdAt == null ||
+              createdAt.compareTo(current.createdAt!) >= 0);
+
+      latestByThread[threadId] = _EmailThreadPreview(
         threadId: current.threadId,
         otherUserId: current.otherUserId,
         otherUserName: current.otherUserName,
-        subject:
-            createdAt != null &&
-                (current.createdAt == null ||
-                    createdAt.compareTo(current.createdAt!) >= 0)
+        subject: isLatest
             ? ((data['subject'] as String?)?.trim() ?? '')
             : current.subject,
-        message:
-            createdAt != null &&
-                (current.createdAt == null ||
-                    createdAt.compareTo(current.createdAt!) >= 0)
+        message: isLatest
             ? ((data['message'] as String?)?.trim() ?? '')
             : current.message,
-        createdAt:
-            createdAt != null &&
-                (current.createdAt == null ||
-                    createdAt.compareTo(current.createdAt!) >= 0)
-            ? createdAt
-            : current.createdAt,
-        hasUnread: current.hasUnread || hasUnread,
+        createdAt: isLatest ? createdAt : current.createdAt,
+        hasUnread: (unreadCountByThread[threadId] ?? 0) > 0,
+        unreadCount: unreadCountByThread[threadId] ?? current.unreadCount,
+        lastMessageIsMine: isLatest ? isMine : current.lastMessageIsMine,
       );
     }
 
-    final orderedThreads = threads.values.toList()
-      ..sort((a, b) {
-        if (a.createdAt == null && b.createdAt == null) return 0;
-        if (a.createdAt == null) return 1;
-        if (b.createdAt == null) return -1;
-        return b.createdAt!.compareTo(a.createdAt!);
-      });
+    final orderedThreads =
+        latestByThread.values
+            .map(
+              (thread) => _EmailThreadPreview(
+                threadId: thread.threadId,
+                otherUserId: thread.otherUserId,
+                otherUserName: thread.otherUserName,
+                subject: thread.subject,
+                message: thread.message,
+                createdAt: thread.createdAt,
+                hasUnread: (unreadCountByThread[thread.threadId] ?? 0) > 0,
+                unreadCount: unreadCountByThread[thread.threadId] ?? 0,
+                lastMessageIsMine: thread.lastMessageIsMine,
+              ),
+            )
+            .toList()
+          ..sort((a, b) {
+            if (a.createdAt == null && b.createdAt == null) return 0;
+            if (a.createdAt == null) return 1;
+            if (b.createdAt == null) return -1;
+            return b.createdAt!.compareTo(a.createdAt!);
+          });
     return orderedThreads;
+  }
+
+  String _threadTimestampLabel(Timestamp? timestamp) {
+    if (timestamp == null) return '';
+    final date = timestamp.toDate().toLocal();
+    final now = DateTime.now();
+    final today = DateTime(now.year, now.month, now.day);
+    final target = DateTime(date.year, date.month, date.day);
+    final diff = today.difference(target).inDays;
+
+    if (diff == 0) {
+      final hour = date.hour.toString().padLeft(2, '0');
+      final minute = date.minute.toString().padLeft(2, '0');
+      return '$hour:$minute';
+    }
+    if (diff == 1) return 'Yesterday';
+    if (diff < 7) {
+      const days = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+      return days[date.weekday - 1];
+    }
+    return '${date.day}/${date.month}';
+  }
+
+  String _threadPreviewLabel(_EmailThreadPreview thread, bool isChat) {
+    final prefix = thread.lastMessageIsMine ? 'You: ' : '';
+    final base = thread.message.trim();
+    if (base.isNotEmpty) {
+      return '$prefix$base';
+    }
+
+    if (!isChat && thread.subject.trim().isNotEmpty) {
+      return thread.subject.trim();
+    }
+
+    return isChat ? 'Start chatting' : 'Open conversation';
+  }
+
+  bool _threadMatchesInboxQuery(_EmailThreadPreview thread) {
+    final query = _inboxQuery.trim().toLowerCase();
+    if (query.isEmpty) return true;
+
+    final haystack = [
+      thread.otherUserName,
+      thread.subject,
+      thread.message,
+    ].join(' ').toLowerCase();
+
+    return haystack.contains(query);
+  }
+
+  Widget _buildInboxSegment({
+    required String label,
+    required IconData icon,
+    required bool selected,
+    required VoidCallback onTap,
+  }) {
+    final accent = _inboxAccentColor(context);
+    return Expanded(
+      child: GestureDetector(
+        onTap: onTap,
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 180),
+          curve: Curves.easeOut,
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+          decoration: BoxDecoration(
+            color: selected ? Colors.white : Colors.transparent,
+            borderRadius: BorderRadius.circular(18),
+          ),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Icon(
+                icon,
+                size: 18,
+                color: selected ? accent : Colors.white.withValues(alpha: 0.92),
+              ),
+              const SizedBox(width: 8),
+              Text(
+                label,
+                style: TextStyle(
+                  color: selected
+                      ? accent
+                      : Colors.white.withValues(alpha: 0.92),
+                  fontWeight: selected ? FontWeight.w800 : FontWeight.w700,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildInboxEmptyState(bool isChatTab) {
+    final surface = _inboxSurfaceColor(context);
+    final accent = _inboxAccentColor(context);
+    final muted = _inboxMutedColor(context);
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 30),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Container(
+              width: 82,
+              height: 82,
+              decoration: BoxDecoration(
+                color: surface,
+                shape: BoxShape.circle,
+                boxShadow: [
+                  BoxShadow(
+                    color: accent.withValues(alpha: 0.16),
+                    blurRadius: 24,
+                    offset: const Offset(0, 10),
+                  ),
+                ],
+              ),
+              child: Icon(
+                isChatTab
+                    ? Icons.chat_bubble_outline_rounded
+                    : Icons.mail_outline_rounded,
+                size: 38,
+                color: accent,
+              ),
+            ),
+            const SizedBox(height: 18),
+            Text(
+              _inboxQuery.trim().isNotEmpty
+                  ? 'Nothing found'
+                  : (isChatTab ? 'No chats yet' : 'No mail yet'),
+              style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w800),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              _inboxQuery.trim().isNotEmpty
+                  ? 'Try another name or keyword.'
+                  : isChatTab
+                  ? 'Your private conversations will show up here.'
+                  : 'Course mail and replies will appear here.',
+              textAlign: TextAlign.center,
+              style: TextStyle(color: muted, fontSize: 14),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildInboxThreadTile(
+    _EmailThreadPreview thread, {
+    required bool isChatTab,
+  }) {
+    final accent = _inboxAccentColor(context);
+    final muted = _inboxMutedColor(context);
+    final primaryText = _inboxPrimaryTextColor(context);
+    final isUnread = thread.hasUnread;
+    final senderName = thread.otherUserName;
+    final avatarData = _threadAvatarCache[thread.otherUserId];
+    final preview = _threadPreviewLabel(thread, isChatTab);
+    final timeLabel = _threadTimestampLabel(thread.createdAt);
+
+    return InkWell(
+      onTap: () => _showEmailDetails({
+        'threadId': thread.threadId,
+        'otherUserId': thread.otherUserId,
+        'otherUserName': thread.otherUserName,
+        'subject': thread.subject,
+        'channel': isChatTab ? 'chat' : 'mail',
+      }),
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            UserAvatar(
+              avatarId: avatarData?.avatarId,
+              profilePicBase64: avatarData?.profilePicBase64,
+              profilePicUrl: avatarData?.profilePicUrl,
+              displayName: senderName,
+              radius: 28,
+              onTap: () => UserAvatar.showViewer(
+                context,
+                avatarId: avatarData?.avatarId,
+                profilePicBase64: avatarData?.profilePicBase64,
+                profilePicUrl: avatarData?.profilePicUrl,
+                displayName: senderName,
+              ),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Expanded(
+                        child: Text(
+                          senderName,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            fontSize: 16,
+                            fontWeight: isUnread
+                                ? FontWeight.w800
+                                : FontWeight.w700,
+                          ),
+                        ),
+                      ),
+                      if (timeLabel.isNotEmpty)
+                        Text(
+                          timeLabel,
+                          style: TextStyle(
+                            fontSize: 12,
+                            fontWeight: isUnread
+                                ? FontWeight.w700
+                                : FontWeight.w500,
+                            color: isUnread ? accent : muted,
+                          ),
+                        ),
+                    ],
+                  ),
+                  const SizedBox(height: 5),
+                  Row(
+                    crossAxisAlignment: CrossAxisAlignment.center,
+                    children: [
+                      if (thread.lastMessageIsMine) ...[
+                        Icon(
+                          isUnread
+                              ? Icons.done_rounded
+                              : Icons.done_all_rounded,
+                          size: 16,
+                          color: isUnread ? muted : const Color(0xFF55BDEB),
+                        ),
+                        const SizedBox(width: 4),
+                      ],
+                      Expanded(
+                        child: Text(
+                          preview,
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            color: isUnread ? primaryText : muted,
+                            fontWeight: isUnread
+                                ? FontWeight.w600
+                                : FontWeight.w500,
+                            height: 1.2,
+                          ),
+                        ),
+                      ),
+                      if (thread.unreadCount > 0) ...[
+                        const SizedBox(width: 10),
+                        Container(
+                          constraints: const BoxConstraints(minWidth: 24),
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 7,
+                            vertical: 5,
+                          ),
+                          decoration: BoxDecoration(
+                            color: accent,
+                            borderRadius: BorderRadius.circular(999),
+                          ),
+                          child: Text(
+                            '${thread.unreadCount}',
+                            textAlign: TextAlign.center,
+                            style: TextStyle(
+                              color: Colors.white,
+                              fontSize: 11,
+                              fontWeight: FontWeight.w800,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ],
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 
   void _showEmailDetails(Map<String, dynamic> email) {
@@ -2077,17 +2650,24 @@ class _MainScreenState extends State<MainScreen> {
         title: const Text('Notifications'),
         content: Column(
           mainAxisSize: MainAxisSize.min,
-          children: const [
+          children: [
             ListTile(
-              leading: Icon(Icons.class_, color: Colors.blue),
-              title: Text('Schedule Change'),
-              subtitle: Text('System Programming lecture rescheduled.'),
+              leading: const Icon(Icons.schedule_rounded, color: Colors.blue),
+              title: const Text('Class reminders'),
+              subtitle: Text(
+                _notificationsEnabled
+                    ? 'You will get reminders before classes start.'
+                    : 'Class reminders are currently turned off.',
+              ),
             ),
             ListTile(
-              leading: Icon(Icons.warning, color: Colors.orange),
-              title: Text('Deadline Approaching'),
-              subtitle: Text(
-                'Database Systems project submission due tomorrow.',
+              leading: const Icon(
+                Icons.mark_email_unread_outlined,
+                color: Colors.orange,
+              ),
+              title: const Text('Messages and updates'),
+              subtitle: const Text(
+                'New inbox activity appears here as local notifications.',
               ),
             ),
           ],
@@ -2269,10 +2849,11 @@ class _MainScreenState extends State<MainScreen> {
     String time,
     String room,
     String professor,
+    Course course,
   ) {
     showModalBottomSheet(
       context: context,
-      builder: (context) => Padding(
+      builder: (sheetContext) => Padding(
         padding: const EdgeInsets.all(24.0),
         child: Column(
           mainAxisSize: MainAxisSize.min,
@@ -2397,17 +2978,33 @@ class _MainScreenState extends State<MainScreen> {
               ],
             ),
             const SizedBox(height: 32),
-            SizedBox(
-              width: double.infinity,
-              child: ElevatedButton(
-                onPressed: () => Navigator.pop(context),
-                style: ElevatedButton.styleFrom(
-                  padding: const EdgeInsets.symmetric(vertical: 16),
-                  backgroundColor: Theme.of(context).colorScheme.primary,
-                  foregroundColor: Theme.of(context).colorScheme.onPrimary,
+            Row(
+              children: [
+                Expanded(
+                  child: OutlinedButton(
+                    onPressed: () => Navigator.pop(sheetContext),
+                    style: OutlinedButton.styleFrom(
+                      padding: const EdgeInsets.symmetric(vertical: 16),
+                    ),
+                    child: const Text('Close'),
+                  ),
                 ),
-                child: const Text('Close'),
-              ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: ElevatedButton(
+                    onPressed: () {
+                      Navigator.pop(sheetContext);
+                      _openCourseDetails(course);
+                    },
+                    style: ElevatedButton.styleFrom(
+                      padding: const EdgeInsets.symmetric(vertical: 16),
+                      backgroundColor: Theme.of(context).colorScheme.primary,
+                      foregroundColor: Theme.of(context).colorScheme.onPrimary,
+                    ),
+                    child: const Text('View course'),
+                  ),
+                ),
+              ],
             ),
           ],
         ),
@@ -2494,8 +3091,34 @@ class _MainScreenState extends State<MainScreen> {
       return DateTime.fromMillisecondsSinceEpoch(millis);
     }
     if (value is String) {
-      return DateTime.tryParse(value);
+      return _tryParseFlexibleDateString(value);
     }
+    return null;
+  }
+
+  DateTime? _tryParseFlexibleDateString(String value) {
+    final trimmed = value.trim();
+    if (trimmed.isEmpty) return null;
+
+    final parsedIso = DateTime.tryParse(trimmed);
+    if (parsedIso != null) return parsedIso;
+
+    final dotDateTime = RegExp(
+      r'^(\d{1,2})[./-](\d{1,2})[./-](\d{4})(?:[ T](\d{1,2}):(\d{2})(?::(\d{2}))?)?$',
+    ).firstMatch(trimmed);
+    if (dotDateTime != null) {
+      final day = int.tryParse(dotDateTime.group(1) ?? '');
+      final month = int.tryParse(dotDateTime.group(2) ?? '');
+      final year = int.tryParse(dotDateTime.group(3) ?? '');
+      final hour = int.tryParse(dotDateTime.group(4) ?? '') ?? 0;
+      final minute = int.tryParse(dotDateTime.group(5) ?? '') ?? 0;
+      final second = int.tryParse(dotDateTime.group(6) ?? '') ?? 0;
+
+      if (day != null && month != null && year != null) {
+        return DateTime(year, month, day, hour, minute, second);
+      }
+    }
+
     return null;
   }
 
@@ -2523,21 +3146,10 @@ class _MainScreenState extends State<MainScreen> {
 
   String _announcementDateLabel(DateTime? dateTime) {
     if (dateTime == null) return 'Unknown';
-    const months = [
-      'Jan',
-      'Feb',
-      'Mar',
-      'Apr',
-      'May',
-      'Jun',
-      'Jul',
-      'Aug',
-      'Sep',
-      'Oct',
-      'Nov',
-      'Dec',
-    ];
-    return '${months[dateTime.month - 1]} ${dateTime.day.toString().padLeft(2, '0')}';
+    final day = dateTime.day.toString().padLeft(2, '0');
+    final month = dateTime.month.toString().padLeft(2, '0');
+    final year = dateTime.year.toString();
+    return '$day.$month.$year';
   }
 
   _ScheduleEntry? _activeClassEntry(List<_ScheduleEntry> entries) {
@@ -2549,12 +3161,19 @@ class _MainScreenState extends State<MainScreen> {
     return null;
   }
 
-  int _urgentDeadlinesCountFromSubjectDocs(List<QueryDocumentSnapshot> docs) {
+  ({String subject, DateTime deadline})?
+  _nearestHomeworkDeadlineFromSubjectDocs(List<QueryDocumentSnapshot> docs) {
     final now = (_serverNow ?? _nowInTashkent()).toUtc();
-    var count = 0;
+    DateTime? nearest;
+    String nearestSubject = '';
+
     for (final doc in docs) {
       final data = doc.data() as Map<String, dynamic>?;
       if (data == null) continue;
+      final subjectCode = (data['code'] as String?)?.trim();
+      final subject = (subjectCode != null && subjectCode.isNotEmpty)
+          ? subjectCode
+          : doc.id;
       final rawMaterials = data['materials'];
       if (rawMaterials is! List) continue;
 
@@ -2563,6 +3182,7 @@ class _MainScreenState extends State<MainScreen> {
         final item = rawItem.map(
           (key, value) => MapEntry(key.toString(), value),
         );
+
         final type = (item['type'] as String?)?.trim().toLowerCase() ?? '';
         if (type != 'homework') continue;
 
@@ -2570,42 +3190,206 @@ class _MainScreenState extends State<MainScreen> {
           item['deadline'] ?? item['dueDate'],
         );
         if (deadline == null) continue;
-        final diff = deadline.toUtc().difference(now);
-        if (!diff.isNegative && diff <= const Duration(hours: 24)) {
-          count += 1;
+
+        final deadlineUtc = deadline.toUtc();
+        if (deadlineUtc.isBefore(now)) continue;
+
+        if (nearest == null || deadlineUtc.isBefore(nearest)) {
+          nearest = deadlineUtc;
+          nearestSubject = subject;
         }
       }
     }
-    return count;
+
+    if (nearest == null) return null;
+    return (subject: nearestSubject, deadline: nearest);
   }
 
-  Widget _buildHomeStatusCard({
+  List<
+    ({
+      String subject,
+      String kind,
+      String title,
+      String description,
+      DateTime? dateTime,
+      DateTime? deadline,
+    })
+  >
+  _collectRecentUpdatesFromSubjectDocs(
+    List<QueryDocumentSnapshot> subjectDocs,
+  ) {
+    final updates =
+        <
+          ({
+            String subject,
+            String kind,
+            String title,
+            String description,
+            DateTime? dateTime,
+            DateTime? deadline,
+          })
+        >[];
+
+    for (final doc in subjectDocs) {
+      final data = doc.data() as Map<String, dynamic>?;
+      if (data == null) continue;
+
+      final subject = (data['code'] as String?)?.trim().isNotEmpty == true
+          ? (data['code'] as String).trim()
+          : doc.id;
+
+      final rawAnnouncements = data['announcements'];
+      if (rawAnnouncements is List) {
+        for (final rawItem in rawAnnouncements) {
+          if (rawItem is! Map) continue;
+          final item = rawItem.map(
+            (key, value) => MapEntry(key.toString(), value),
+          );
+
+          final title = (item['title'] as String?)?.trim().isNotEmpty == true
+              ? (item['title'] as String).trim()
+              : 'Announcement';
+          final description =
+              (item['content'] as String?)?.trim().isNotEmpty == true
+              ? (item['content'] as String).trim()
+              : ((item['description'] as String?)?.trim() ?? '');
+
+          final dateTime =
+              _updateDateFromValue(item) ?? _updateDateFromValue(data);
+          if (!_isAnnouncementNew(dateTime)) continue;
+
+          updates.add((
+            subject: subject,
+            kind: 'Announcement',
+            title: title,
+            description: description,
+            dateTime: dateTime,
+            deadline: _updateDateFromValue(item['deadline'] ?? item['dueDate']),
+          ));
+        }
+      }
+
+      final rawMaterials = data['materials'];
+      if (rawMaterials is! List) continue;
+
+      for (final rawItem in rawMaterials) {
+        if (rawItem is! Map) continue;
+        final item = rawItem.map(
+          (key, value) => MapEntry(key.toString(), value),
+        );
+
+        final title = (item['title'] as String?)?.trim().isNotEmpty == true
+            ? (item['title'] as String).trim()
+            : 'Material';
+        final materialType = (item['type'] as String?)?.trim().toLowerCase();
+        final kind = materialType == null || materialType.isEmpty
+            ? 'Material'
+            : materialType == 'homework'
+            ? 'Homework'
+            : materialType == 'lecture'
+            ? 'Lecture'
+            : 'Material';
+        final description = (item['url'] as String?)?.trim() ?? '';
+
+        final dateTime =
+            _updateDateFromValue(item) ?? _updateDateFromValue(data);
+        if (!_isAnnouncementNew(dateTime)) continue;
+
+        updates.add((
+          subject: subject,
+          kind: kind,
+          title: title,
+          description: description,
+          dateTime: dateTime,
+          deadline: _updateDateFromValue(item['deadline'] ?? item['dueDate']),
+        ));
+      }
+    }
+
+    updates.sort((a, b) {
+      if (a.dateTime == null && b.dateTime == null) return 0;
+      if (a.dateTime == null) return 1;
+      if (b.dateTime == null) return -1;
+      return b.dateTime!.compareTo(a.dateTime!);
+    });
+
+    return updates;
+  }
+
+  String _deadlineCountdownLabel(DateTime? deadline) {
+    if (deadline == null) return '';
+    final now = (_serverNow ?? _nowInTashkent()).toUtc();
+    final diff = deadline.toUtc().difference(now);
+    if (diff.isNegative) return 'Overdue';
+    if (diff.inHours < 24) return '${diff.inHours}h left';
+    if (diff.inDays == 1) return '1 day left';
+    return '${diff.inDays} days left';
+  }
+
+  Widget _buildHomeInsightCard({
     required String title,
-    required String value,
     required IconData icon,
+    required List<Widget> children,
     Color? accent,
   }) {
     final scheme = Theme.of(context).colorScheme;
     final tone = accent ?? scheme.primary;
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+      width: double.infinity,
+      padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
-        color: scheme.surfaceContainerHighest.withValues(alpha: 0.35),
-        borderRadius: BorderRadius.circular(14),
+        color: scheme.surfaceContainerHighest.withValues(alpha: 0.32),
+        borderRadius: BorderRadius.circular(20),
         border: Border.all(color: scheme.outlineVariant.withValues(alpha: 0.5)),
       ),
-      child: Row(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Icon(icon, size: 16, color: tone),
-          const SizedBox(width: 8),
+          Row(
+            children: [
+              Icon(icon, size: 18, color: tone),
+              const SizedBox(width: 8),
+              Text(
+                title,
+                style: TextStyle(
+                  fontWeight: FontWeight.w800,
+                  fontSize: 16,
+                  color: scheme.onSurface,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          ...children,
+        ],
+      ),
+    );
+  }
+
+  Widget _buildHomeInsightRow({
+    required IconData icon,
+    required String label,
+    required String value,
+    String? subtitle,
+    VoidCallback? onTap,
+    Color? iconColor,
+  }) {
+    final scheme = Theme.of(context).colorScheme;
+    final content = Padding(
+      padding: const EdgeInsets.symmetric(vertical: 6),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(icon, size: 18, color: iconColor ?? scheme.primary),
+          const SizedBox(width: 10),
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  title,
+                  label,
                   style: TextStyle(
-                    fontSize: 11,
+                    fontSize: 12,
                     fontWeight: FontWeight.w700,
                     color: scheme.onSurfaceVariant,
                   ),
@@ -2613,19 +3397,41 @@ class _MainScreenState extends State<MainScreen> {
                 const SizedBox(height: 2),
                 Text(
                   value,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
                   style: TextStyle(
-                    fontSize: 13,
+                    fontSize: 15,
                     fontWeight: FontWeight.w700,
                     color: scheme.onSurface,
                   ),
                 ),
+                if (subtitle != null && subtitle.trim().isNotEmpty) ...[
+                  const SizedBox(height: 2),
+                  Text(
+                    subtitle,
+                    style: TextStyle(
+                      fontSize: 12,
+                      color: scheme.onSurfaceVariant,
+                    ),
+                  ),
+                ],
               ],
             ),
           ),
+          if (onTap != null)
+            Icon(
+              Icons.chevron_right_rounded,
+              color: scheme.onSurfaceVariant,
+              size: 18,
+            ),
         ],
       ),
+    );
+
+    if (onTap == null) return content;
+
+    return InkWell(
+      borderRadius: BorderRadius.circular(12),
+      onTap: onTap,
+      child: content,
     );
   }
 
@@ -2634,8 +3440,9 @@ class _MainScreenState extends State<MainScreen> {
     String time,
     String room,
     String professor,
+    Course course,
   ) {
-    _showTimetableDetails(subject, time, room, professor);
+    _showTimetableDetails(subject, time, room, professor, course);
   }
 
   _ScheduleEntry? _nearestUpcomingEntry(List<_ScheduleEntry> entries) {
@@ -2664,6 +3471,8 @@ class _MainScreenState extends State<MainScreen> {
     bool isActive,
     bool isUpcoming,
   ) {
+    final course = _courseFromTimetableCard(subject, professor);
+
     if (isActive) {
       return Container(
         margin: const EdgeInsets.only(bottom: 12),
@@ -2691,7 +3500,8 @@ class _MainScreenState extends State<MainScreen> {
           color: Colors.transparent,
           child: InkWell(
             borderRadius: BorderRadius.circular(20),
-            onTap: () => _onTimetableTap(subject, time, room, professor),
+            onTap: () =>
+                _onTimetableTap(subject, time, room, professor, course),
             child: Padding(
               padding: const EdgeInsets.all(16),
               child: Column(
@@ -2786,7 +3596,7 @@ class _MainScreenState extends State<MainScreen> {
       ),
       child: InkWell(
         borderRadius: BorderRadius.circular(16),
-        onTap: () => _onTimetableTap(subject, time, room, professor),
+        onTap: () => _onTimetableTap(subject, time, room, professor, course),
         child: Padding(
           padding: const EdgeInsets.all(16),
           child: Row(
@@ -2995,10 +3805,7 @@ class _MainScreenState extends State<MainScreen> {
                 padding: const EdgeInsets.only(right: 16),
                 child: IconButton.filledTonal(
                   onPressed: _showNotificationDialog,
-                  icon: Badge(
-                    label: const Text('3'),
-                    child: const Icon(Icons.notifications_outlined),
-                  ),
+                  icon: const Icon(Icons.notifications_outlined),
                 ),
               ),
             ],
@@ -3071,61 +3878,6 @@ class _MainScreenState extends State<MainScreen> {
                               // Removed View All button
                             ],
                           ),
-                          const SizedBox(height: 12),
-                          Row(
-                            children: [
-                              Expanded(
-                                child: _buildHomeStatusCard(
-                                  title: 'Now',
-                                  value:
-                                      activeEntry?.subject ?? 'No active class',
-                                  icon: Icons.play_circle_rounded,
-                                  accent: Theme.of(
-                                    context,
-                                  ).colorScheme.tertiary,
-                                ),
-                              ),
-                              const SizedBox(width: 8),
-                              Expanded(
-                                child: _buildHomeStatusCard(
-                                  title: 'Upcoming',
-                                  value:
-                                      nearestUpcomingEntry?.subject ??
-                                      'No upcoming class',
-                                  icon: Icons.schedule_rounded,
-                                ),
-                              ),
-                              const SizedBox(width: 8),
-                              Expanded(
-                                child: StreamBuilder<QuerySnapshot>(
-                                  stream: FirebaseFirestore.instance
-                                      .collection('subjects')
-                                      .snapshots(),
-                                  builder: (context, urgentSnapshot) {
-                                    final docs =
-                                        urgentSnapshot.data?.docs ??
-                                        const <
-                                          QueryDocumentSnapshot<Object?>
-                                        >[];
-                                    final urgent =
-                                        _urgentDeadlinesCountFromSubjectDocs(
-                                          docs,
-                                        );
-                                    return _buildHomeStatusCard(
-                                      title: 'Urgent',
-                                      value: urgent == 0
-                                          ? 'No deadlines'
-                                          : '$urgent due in 24h',
-                                      icon: Icons.warning_amber_rounded,
-                                      accent: Theme.of(
-                                        context,
-                                      ).colorScheme.error,
-                                    );
-                                  },
-                                ),
-                              ),
-                            ],
-                          ),
                           const SizedBox(height: 16),
                           if (snapshot.hasError)
                             Container(
@@ -3160,12 +3912,23 @@ class _MainScreenState extends State<MainScreen> {
                                     ),
                                     const SizedBox(height: 16),
                                     Text(
-                                      'No classes today',
+                                      'No classes left for today',
                                       style: TextStyle(
                                         color: Theme.of(
                                           context,
                                         ).colorScheme.onSurfaceVariant,
                                         fontSize: 16,
+                                        fontWeight: FontWeight.w700,
+                                      ),
+                                    ),
+                                    const SizedBox(height: 8),
+                                    Text(
+                                      'Use Timetable to check what is coming next this week.',
+                                      textAlign: TextAlign.center,
+                                      style: TextStyle(
+                                        color: Theme.of(
+                                          context,
+                                        ).colorScheme.onSurfaceVariant,
                                       ),
                                     ),
                                   ],
@@ -3191,41 +3954,15 @@ class _MainScreenState extends State<MainScreen> {
                                 isUpcoming,
                               );
                             }),
-                          const SizedBox(height: 32),
-                          Row(
-                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                            children: [
-                              Text(
-                                'Latest Updates',
-                                style: Theme.of(context).textTheme.titleLarge
-                                    ?.copyWith(fontWeight: FontWeight.bold),
-                              ),
-                              TextButton(
-                                onPressed: () {
-                                  ScaffoldMessenger.of(context).showSnackBar(
-                                    const SnackBar(
-                                      content: Text(
-                                        'More announcements coming soon',
-                                      ),
-                                    ),
-                                  );
-                                },
-                                style: TextButton.styleFrom(
-                                  visualDensity: VisualDensity.compact,
-                                ),
-                                child: const Text('See all'),
-                              ),
-                            ],
-                          ),
-                          const SizedBox(height: 16),
+                          const SizedBox(height: 28),
                           StreamBuilder<QuerySnapshot>(
                             stream: FirebaseFirestore.instance
                                 .collection('subjects')
                                 .snapshots(),
-                            builder: (context, announcementSnapshot) {
-                              if (announcementSnapshot.connectionState ==
+                            builder: (context, homeInfoSnapshot) {
+                              if (homeInfoSnapshot.connectionState ==
                                       ConnectionState.waiting &&
-                                  !announcementSnapshot.hasData) {
+                                  !homeInfoSnapshot.hasData) {
                                 return const Padding(
                                   padding: EdgeInsets.symmetric(vertical: 12),
                                   child: Center(
@@ -3234,13 +3971,13 @@ class _MainScreenState extends State<MainScreen> {
                                 );
                               }
 
-                              if (announcementSnapshot.hasError) {
+                              if (homeInfoSnapshot.hasError) {
                                 return Padding(
                                   padding: const EdgeInsets.symmetric(
                                     vertical: 8,
                                   ),
                                   child: Text(
-                                    'Could not load updates',
+                                    'Could not load home insights',
                                     style: TextStyle(
                                       color: Theme.of(
                                         context,
@@ -3251,346 +3988,165 @@ class _MainScreenState extends State<MainScreen> {
                               }
 
                               final subjectDocs =
-                                  announcementSnapshot.data?.docs ??
+                                  homeInfoSnapshot.data?.docs ??
                                   const <QueryDocumentSnapshot<Object?>>[];
+                              final nearestDeadline =
+                                  _nearestHomeworkDeadlineFromSubjectDocs(
+                                    subjectDocs,
+                                  );
+                              final updates =
+                                  _collectRecentUpdatesFromSubjectDocs(
+                                    subjectDocs,
+                                  );
+                              final visibleUpdates = updates.take(5).toList();
 
-                              final rawUpdates =
-                                  <
-                                    ({
-                                      String subject,
-                                      String kind,
-                                      String title,
-                                      String description,
-                                      DateTime? dateTime,
-                                      DateTime? deadline,
-                                    })
-                                  >[];
-
-                              for (final doc in subjectDocs) {
-                                final data =
-                                    doc.data() as Map<String, dynamic>?;
-                                if (data == null) continue;
-
-                                final subject =
-                                    (data['code'] as String?)
-                                            ?.trim()
-                                            .isNotEmpty ==
-                                        true
-                                    ? (data['code'] as String).trim()
-                                    : doc.id;
-
-                                final rawAnnouncements = data['announcements'];
-
-                                if (rawAnnouncements is List) {
-                                  for (final rawItem in rawAnnouncements) {
-                                    if (rawItem is! Map) continue;
-                                    final item = rawItem.map(
-                                      (key, value) =>
-                                          MapEntry(key.toString(), value),
-                                    );
-
-                                    final title =
-                                        (item['title'] as String?)
-                                                ?.trim()
-                                                .isNotEmpty ==
-                                            true
-                                        ? (item['title'] as String).trim()
-                                        : 'Announcement';
-                                    final description =
-                                        (item['content'] as String?)
-                                                ?.trim()
-                                                .isNotEmpty ==
-                                            true
-                                        ? (item['content'] as String).trim()
-                                        : ((item['description'] as String?)
-                                                  ?.trim() ??
-                                              '');
-                                    final dateTime = _updateDateFromValue(item);
-
-                                    if (!_isAnnouncementNew(dateTime)) continue;
-
-                                    rawUpdates.add((
-                                      subject: subject,
-                                      kind: 'Announcement',
-                                      title: title,
-                                      description: description,
-                                      dateTime: dateTime,
-                                      deadline: _updateDateFromValue(
-                                        item['deadline'] ?? item['dueDate'],
+                              return Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  _buildHomeInsightCard(
+                                    title: 'What Awaits You',
+                                    icon: Icons.radar_rounded,
+                                    children: [
+                                      _buildHomeInsightRow(
+                                        icon: Icons.play_circle_rounded,
+                                        label: 'Now',
+                                        value:
+                                            activeEntry?.subject ??
+                                            'No active class',
+                                        subtitle: activeEntry == null
+                                            ? 'Take a short break or review notes'
+                                            : '${activeEntry.time} • ${activeEntry.room}',
+                                        iconColor: Theme.of(
+                                          context,
+                                        ).colorScheme.tertiary,
                                       ),
-                                    ));
-                                  }
-                                }
-
-                                final rawMaterials = data['materials'];
-                                if (rawMaterials is List) {
-                                  for (final rawItem in rawMaterials) {
-                                    if (rawItem is! Map) continue;
-                                    final item = rawItem.map(
-                                      (key, value) =>
-                                          MapEntry(key.toString(), value),
-                                    );
-
-                                    final title =
-                                        (item['title'] as String?)
-                                                ?.trim()
-                                                .isNotEmpty ==
-                                            true
-                                        ? (item['title'] as String).trim()
-                                        : 'Material';
-                                    final materialType =
-                                        (item['type'] as String?)
-                                            ?.trim()
-                                            .toLowerCase();
-                                    final kind =
-                                        materialType == null ||
-                                            materialType.isEmpty
-                                        ? 'Material'
-                                        : materialType == 'homework'
-                                        ? 'Homework'
-                                        : materialType == 'lecture'
-                                        ? 'Lecture'
-                                        : 'Material';
-                                    final description =
-                                        (item['url'] as String?)?.trim() ?? '';
-                                    final dateTime = _updateDateFromValue(item);
-
-                                    if (!_isAnnouncementNew(dateTime)) continue;
-
-                                    rawUpdates.add((
-                                      subject: subject,
-                                      kind: kind,
-                                      title: title,
-                                      description: description,
-                                      dateTime: dateTime,
-                                      deadline: _updateDateFromValue(
-                                        item['deadline'] ?? item['dueDate'],
+                                      Divider(
+                                        height: 12,
+                                        color: Theme.of(
+                                          context,
+                                        ).colorScheme.outlineVariant,
                                       ),
-                                    ));
-                                  }
-                                }
-                              }
-
-                              final subjectGroups =
-                                  <
-                                    String,
-                                    ({
-                                      String subject,
-                                      DateTime? latest,
-                                      List<
-                                        ({
-                                          String kind,
-                                          String title,
-                                          String description,
-                                          DateTime? dateTime,
-                                          DateTime? deadline,
-                                        })
-                                      >
-                                      items,
-                                    })
-                                  >{};
-
-                              for (final item in rawUpdates) {
-                                final key = item.subject.trim().toUpperCase();
-                                final current = subjectGroups[key];
-
-                                if (current == null) {
-                                  subjectGroups[key] = (
-                                    subject: item.subject.trim(),
-                                    latest: item.dateTime,
-                                    items: [
-                                      (
-                                        kind: item.kind,
-                                        title: item.title,
-                                        description: item.description,
-                                        dateTime: item.dateTime,
-                                        deadline: item.deadline,
+                                      _buildHomeInsightRow(
+                                        icon: Icons.schedule_rounded,
+                                        label: 'Upcoming',
+                                        value:
+                                            nearestUpcomingEntry?.subject ??
+                                            'No upcoming class',
+                                        subtitle: nearestUpcomingEntry == null
+                                            ? 'You are free for the rest of today'
+                                            : '${nearestUpcomingEntry.time} • ${nearestUpcomingEntry.room}',
+                                      ),
+                                      Divider(
+                                        height: 12,
+                                        color: Theme.of(
+                                          context,
+                                        ).colorScheme.outlineVariant,
+                                      ),
+                                      _buildHomeInsightRow(
+                                        icon: Icons.warning_amber_rounded,
+                                        label: 'Nearest deadline',
+                                        value: nearestDeadline == null
+                                            ? 'No active deadlines'
+                                            : '${nearestDeadline.subject} • ${_announcementDateLabel(nearestDeadline.deadline)}',
+                                        subtitle: nearestDeadline == null
+                                            ? 'No homework with future due date'
+                                            : _deadlineCountdownLabel(
+                                                nearestDeadline.deadline,
+                                              ),
+                                        iconColor: Theme.of(
+                                          context,
+                                        ).colorScheme.error,
                                       ),
                                     ],
-                                  );
-                                  continue;
-                                }
-
-                                final latest =
-                                    (current.latest == null ||
-                                        (item.dateTime != null &&
-                                            item.dateTime!.isAfter(
-                                              current.latest!,
-                                            )))
-                                    ? item.dateTime
-                                    : current.latest;
-
-                                current.items.add((
-                                  kind: item.kind,
-                                  title: item.title,
-                                  description: item.description,
-                                  dateTime: item.dateTime,
-                                  deadline: item.deadline,
-                                ));
-
-                                subjectGroups[key] = (
-                                  subject: current.subject,
-                                  latest: latest,
-                                  items: current.items,
-                                );
-                              }
-
-                              final groupedUpdates =
-                                  subjectGroups.values.toList()..sort((a, b) {
-                                    if (a.latest == null && b.latest == null) return 0;
-                                      
-
-                                    if (a.latest == null) return 1;
-                                    if (b.latest == null) return -1;
-                                    return b.latest!.compareTo(a.latest!);
-                                  });
-
-                              if (groupedUpdates.isEmpty) {
-                                return Padding(
-                                  padding: const EdgeInsets.symmetric(
-                                    vertical: 8,
                                   ),
-                                  child: Text(
-                                    'No new updates in the last 24 hours',
-                                    style: TextStyle(
-                                      color: Theme.of(
-                                        context,
-                                      ).colorScheme.onSurfaceVariant,
-                                    ),
-                                  ),
-                                );
-                              }
-
-                              final visibleGroups = groupedUpdates
-                                  .take(6)
-                                  .toList();
-                              return Column(
-                                children: visibleGroups.map((group) {
-                                  return Container(
-                                    margin: const EdgeInsets.only(bottom: 12),
-                                    decoration: BoxDecoration(
-                                      color: Theme.of(context)
-                                          .colorScheme
-                                          .surfaceContainerHighest
-                                          .withValues(alpha: 0.28),
-                                      borderRadius: BorderRadius.circular(18),
-                                      border: Border.all(
-                                        color: Theme.of(context)
-                                            .colorScheme
-                                            .outlineVariant
-                                            .withValues(alpha: 0.4),
-                                      ),
-                                    ),
-                                    padding: const EdgeInsets.all(12),
-                                    child: Column(
-                                      crossAxisAlignment:
-                                          CrossAxisAlignment.start,
-                                      children: [
-                                        Row(
-                                          children: [
-                                            Icon(
-                                              _subjectIcon(
-                                                group.subject,
-                                                group.subject,
-                                              ),
-                                              size: 16,
-                                              color: Theme.of(
-                                                context,
-                                              ).colorScheme.primary,
-                                            ),
-                                            const SizedBox(width: 6),
+                                  const SizedBox(height: 16),
+                                  _buildHomeInsightCard(
+                                    title: 'Latest Course Updates',
+                                    icon: Icons.campaign_rounded,
+                                    children: visibleUpdates.isEmpty
+                                        ? [
                                             Text(
-                                              group.subject,
+                                              'No new updates in the last 24 hours',
                                               style: TextStyle(
-                                                fontWeight: FontWeight.w800,
-                                                color: Theme.of(
-                                                  context,
-                                                ).colorScheme.primary,
-                                              ),
-                                            ),
-                                            const Spacer(),
-                                            Text(
-                                              _announcementDateLabel(
-                                                group.latest,
-                                              ),
-                                              style: TextStyle(
-                                                fontSize: 11,
                                                 color: Theme.of(
                                                   context,
                                                 ).colorScheme.onSurfaceVariant,
                                               ),
                                             ),
-                                          ],
-                                        ),
-                                        const SizedBox(height: 10),
-                                        Wrap(
-                                          spacing: 8,
-                                          runSpacing: 8,
-                                          children: group.items.map((entry) {
-                                            final actionVerb =
-                                                entry.kind == 'Announcement'
-                                                ? 'Read'
-                                                : 'Open';
-                                            final label =
-                                                '$actionVerb ${entry.kind.toLowerCase()}: ${entry.title}${entry.deadline == null ? '' : ' (till ${_announcementDateLabel(entry.deadline)})'}';
-                                            return ActionChip(
-                                              label: Text(
-                                                label,
-                                                overflow: TextOverflow.ellipsis,
-                                              ),
-                                              onPressed: () {
-                                                final opensLink =
-                                                    entry.kind !=
-                                                    'Announcement';
-                                                final maybeUri = Uri.tryParse(
-                                                  entry.description.trim(),
-                                                );
-                                                final hasLink =
-                                                    maybeUri != null &&
-                                                    (maybeUri.isScheme(
-                                                          'http',
-                                                        ) ||
-                                                        maybeUri.isScheme(
-                                                          'https',
-                                                        ));
-
-                                                if (opensLink && hasLink) {
-                                                  _confirmAndOpenUrl(
-                                                    entry.description,
-                                                    title:
-                                                        '[${group.subject}] ${entry.kind} link',
-                                                  );
-                                                  return;
-                                                }
-
-                                                _showAnnouncementDetails(
-                                                  '[${group.subject}] ${entry.kind}',
-                                                  entry.description.isEmpty
-                                                      ? '${entry.title}${entry.deadline == null ? '' : '\nDeadline: ${_announcementDateLabel(entry.deadline)}'}'
-                                                      : '${entry.title}${entry.deadline == null ? '' : '\nDeadline: ${_announcementDateLabel(entry.deadline)}'}\n\n${entry.description}',
-                                                  _announcementDateLabel(
-                                                    entry.dateTime,
-                                                  ),
-                                                );
-                                              },
-                                              avatar: Icon(
-                                                entry.kind == 'Homework'
+                                          ]
+                                        : [
+                                            for (
+                                              var i = 0;
+                                              i < visibleUpdates.length;
+                                              i += 1
+                                            ) ...[
+                                              _buildHomeInsightRow(
+                                                icon:
+                                                    visibleUpdates[i].kind ==
+                                                        'Homework'
                                                     ? Icons.assignment_rounded
-                                                    : entry.kind == 'Lecture'
+                                                    : visibleUpdates[i].kind ==
+                                                          'Lecture'
                                                     ? Icons.slideshow_rounded
-                                                    : entry.kind ==
+                                                    : visibleUpdates[i].kind ==
                                                           'Announcement'
                                                     ? Icons.campaign_rounded
                                                     : Icons.description_rounded,
-                                                size: 16,
+                                                label:
+                                                    '${visibleUpdates[i].subject} • ${visibleUpdates[i].kind}',
+                                                value: visibleUpdates[i].title,
+                                                subtitle:
+                                                    '${_announcementDateLabel(visibleUpdates[i].dateTime)}${visibleUpdates[i].deadline == null ? '' : ' • deadline ${_announcementDateLabel(visibleUpdates[i].deadline)}'}',
+                                                onTap: () {
+                                                  final entry =
+                                                      visibleUpdates[i];
+                                                  final opensLink =
+                                                      entry.kind !=
+                                                      'Announcement';
+                                                  final maybeUri = Uri.tryParse(
+                                                    entry.description.trim(),
+                                                  );
+                                                  final hasLink =
+                                                      maybeUri != null &&
+                                                      (maybeUri.isScheme(
+                                                            'http',
+                                                          ) ||
+                                                          maybeUri.isScheme(
+                                                            'https',
+                                                          ));
+
+                                                  if (opensLink && hasLink) {
+                                                    _confirmAndOpenUrl(
+                                                      entry.description,
+                                                      title:
+                                                          '[${entry.subject}] ${entry.kind} link',
+                                                    );
+                                                    return;
+                                                  }
+
+                                                  _showAnnouncementDetails(
+                                                    '[${entry.subject}] ${entry.kind}',
+                                                    entry.description.isEmpty
+                                                        ? '${entry.title}${entry.deadline == null ? '' : '\nDeadline: ${_announcementDateLabel(entry.deadline)}'}'
+                                                        : '${entry.title}${entry.deadline == null ? '' : '\nDeadline: ${_announcementDateLabel(entry.deadline)}'}\n\n${entry.description}',
+                                                    _announcementDateLabel(
+                                                      entry.dateTime,
+                                                    ),
+                                                  );
+                                                },
                                               ),
-                                            );
-                                          }).toList(),
-                                        ),
-                                      ],
-                                    ),
-                                  );
-                                }).toList(),
+                                              if (i !=
+                                                  visibleUpdates.length - 1)
+                                                Divider(
+                                                  height: 12,
+                                                  color: Theme.of(
+                                                    context,
+                                                  ).colorScheme.outlineVariant,
+                                                ),
+                                            ],
+                                          ],
+                                  ),
+                                ],
                               );
                             },
                           ),
@@ -4203,7 +4759,7 @@ class _MainScreenState extends State<MainScreen> {
                       builder: (context) => AlertDialog(
                         title: const Text('Help Center'),
                         content: const Text(
-                          'For support, please contact help@inha.ac.kr or visit the IT center in Building 5.',
+                          'For support at INHA University in Tashkent, please contact help@inha.ac.kr or visit the IT center in Building 5.',
                         ),
                         actions: [
                           TextButton(
@@ -4225,12 +4781,22 @@ class _MainScreenState extends State<MainScreen> {
                     Icons.bug_report_outlined,
                     color: Colors.redAccent,
                   ),
-                  title: const Text('Report a Bug'),
+                  title: const Text('Contact Support'),
                   trailing: const Icon(Icons.chevron_right),
                   onTap: () {
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(
-                        content: Text('Report feature coming soon!'),
+                    showDialog(
+                      context: context,
+                      builder: (context) => AlertDialog(
+                        title: const Text('Contact Support'),
+                        content: const Text(
+                          'Need help with a bug or account issue at INHA University in Tashkent? Contact help@inha.ac.kr or visit the IT center in Building 5.',
+                        ),
+                        actions: [
+                          TextButton(
+                            onPressed: () => Navigator.pop(context),
+                            child: const Text('Close'),
+                          ),
+                        ],
                       ),
                     );
                   },
@@ -4247,9 +4813,13 @@ class _MainScreenState extends State<MainScreen> {
                   onTap: () {
                     showAboutDialog(
                       context: context,
-                      applicationName: 'E-class',
+                      applicationName: 'E-class | INHA University in Tashkent',
                       applicationVersion: '1.0.0',
-                      applicationLegalese: 'Р вЂ™Р’В© 2026 Inha University',
+                      applicationIcon: _buildUniversityEmblem(
+                        size: 52,
+                        elevated: true,
+                      ),
+                      applicationLegalese: '© 2026 INHA University in Tashkent',
                     );
                   },
                 ),
@@ -4533,23 +5103,21 @@ class _MainScreenState extends State<MainScreen> {
   }
 
   Widget _buildEmailScreen() {
+    final canvas = _inboxCanvasColor(context);
+    final surface = _inboxSurfaceColor(context);
+    final header = _inboxHeaderColor(context);
+    final accent = _inboxAccentColor(context);
     return Scaffold(
-      backgroundColor: Theme.of(context).scaffoldBackgroundColor,
-      appBar: AppBar(
-        title: const Text(
-          'Inbox',
-          style: TextStyle(fontWeight: FontWeight.bold),
-        ),
-        centerTitle: false,
-      ),
+      backgroundColor: canvas,
       floatingActionButton: Padding(
         padding: const EdgeInsets.only(bottom: 118),
-        child: FloatingActionButton(
+        child: FloatingActionButton.large(
           onPressed: _showComposeEmailDialog,
-          backgroundColor: Theme.of(context).colorScheme.primary,
+          backgroundColor: accent,
+          elevation: 3,
           child: Icon(
-            _selectedInboxTab == 0 ? Icons.chat_bubble_rounded : Icons.edit,
-            color: Theme.of(context).colorScheme.onPrimary,
+            _selectedInboxTab == 0 ? Icons.edit_rounded : Icons.mail_rounded,
+            color: Colors.white,
           ),
         ),
       ),
@@ -4572,140 +5140,149 @@ class _MainScreenState extends State<MainScreen> {
           // ... (removed builder side-effect logic)
 
           _ensureThreadAvatarCacheForUser(currentUser.uid);
-          final threads = _buildEmailThreads(
+          final allThreads = _buildEmailThreads(
             snapshot.data!.docs,
             currentUser.uid,
             _selectedInboxTab == 0 ? 'chat' : 'mail',
           );
+          final isChatTab = _selectedInboxTab == 0;
+          final threads = allThreads.where(_threadMatchesInboxQuery).toList();
           _queueThreadAvatarSync(threads);
+
           return Column(
             children: [
-              Padding(
-                padding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
-                child: SegmentedButton<int>(
-                  segments: const [
-                    ButtonSegment<int>(
-                      value: 0,
-                      icon: Icon(Icons.chat_bubble_outline),
-                      label: Text('Chats'),
-                    ),
-                    ButtonSegment<int>(
-                      value: 1,
-                      icon: Icon(Icons.mail_outline),
-                      label: Text('Mail'),
-                    ),
-                  ],
-                  selected: {_selectedInboxTab},
-                  onSelectionChanged: (selection) {
-                    setState(() {
-                      _selectedInboxTab = selection.first;
-                    });
-                  },
+              Container(
+                padding: const EdgeInsets.fromLTRB(16, 20, 16, 16),
+                decoration: BoxDecoration(
+                  color: header,
+                  borderRadius: BorderRadius.only(
+                    bottomLeft: Radius.circular(28),
+                    bottomRight: Radius.circular(28),
+                  ),
+                ),
+                child: SafeArea(
+                  bottom: false,
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text(
+                        'Inbox',
+                        style: TextStyle(
+                          color: Colors.white,
+                          fontSize: 30,
+                          fontWeight: FontWeight.w800,
+                        ),
+                      ),
+                      const SizedBox(height: 14),
+                      Container(
+                        padding: const EdgeInsets.all(4),
+                        decoration: BoxDecoration(
+                          color: Colors.white.withValues(alpha: 0.18),
+                          borderRadius: BorderRadius.circular(22),
+                        ),
+                        child: Row(
+                          children: [
+                            _buildInboxSegment(
+                              label: 'Chats',
+                              icon: Icons.chat_bubble_rounded,
+                              selected: isChatTab,
+                              onTap: () {
+                                if (_selectedInboxTab == 0) return;
+                                setState(() {
+                                  _selectedInboxTab = 0;
+                                  _inboxQuery = '';
+                                  _inboxSearchController.clear();
+                                });
+                              },
+                            ),
+                            _buildInboxSegment(
+                              label: 'Mail',
+                              icon: Icons.mail_rounded,
+                              selected: !isChatTab,
+                              onTap: () {
+                                if (_selectedInboxTab == 1) return;
+                                setState(() {
+                                  _selectedInboxTab = 1;
+                                  _inboxQuery = '';
+                                  _inboxSearchController.clear();
+                                });
+                              },
+                            ),
+                          ],
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+                      Container(
+                        height: 48,
+                        decoration: BoxDecoration(
+                          color: Colors.white.withValues(alpha: 0.96),
+                          borderRadius: BorderRadius.circular(18),
+                        ),
+                        child: TextField(
+                          controller: _inboxSearchController,
+                          onChanged: (value) {
+                            setState(() {
+                              _inboxQuery = value;
+                            });
+                          },
+                          decoration: InputDecoration(
+                            hintText: isChatTab
+                                ? 'Search chats'
+                                : 'Search mail',
+                            prefixIcon: const Icon(Icons.search_rounded),
+                            suffixIcon: _inboxQuery.trim().isEmpty
+                                ? null
+                                : IconButton(
+                                    onPressed: () {
+                                      _inboxSearchController.clear();
+                                      setState(() {
+                                        _inboxQuery = '';
+                                      });
+                                    },
+                                    icon: const Icon(Icons.close_rounded),
+                                  ),
+                            border: InputBorder.none,
+                            contentPadding: const EdgeInsets.symmetric(
+                              horizontal: 4,
+                              vertical: 12,
+                            ),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
                 ),
               ),
               Expanded(
-                child: threads.isEmpty
-                    ? Center(
-                        child: Text(
-                          _selectedInboxTab == 0
-                              ? 'No chats yet'
-                              : 'No mail yet',
+                child: Container(
+                  margin: const EdgeInsets.only(top: 10),
+                  decoration: BoxDecoration(
+                    color: surface,
+                    borderRadius: BorderRadius.only(
+                      topLeft: Radius.circular(26),
+                      topRight: Radius.circular(26),
+                    ),
+                  ),
+                  child: threads.isEmpty
+                      ? _buildInboxEmptyState(isChatTab)
+                      : ListView.separated(
+                          padding: const EdgeInsets.only(top: 8, bottom: 120),
+                          itemCount: threads.length,
+                          separatorBuilder: (context, index) => Divider(
+                            height: 1,
+                            indent: 84,
+                            endIndent: 16,
+                            color: accent.withValues(alpha: 0.08),
+                          ),
+                          itemBuilder: (context, index) {
+                            final thread = threads[index];
+                            return _buildInboxThreadTile(
+                              thread,
+                              isChatTab: isChatTab,
+                            );
+                          },
                         ),
-                      )
-                    : ListView.separated(
-                        padding: const EdgeInsets.only(bottom: 110),
-                        itemCount: threads.length,
-                        separatorBuilder: (c, i) => Divider(
-                          height: 1,
-                          indent:
-                              72, // Align with text start (avatar width + padding)
-                          endIndent: 16,
-                          color: Theme.of(
-                            context,
-                          ).colorScheme.outlineVariant.withValues(alpha: 0.2),
-                        ),
-                        itemBuilder: (context, index) {
-                          final thread = threads[index];
-                          final bool isUnread = thread.hasUnread;
-                          final String senderName = thread.otherUserName;
-                          final avatarData =
-                              _threadAvatarCache[thread.otherUserId];
-                          return ListTile(
-                            contentPadding: const EdgeInsets.symmetric(
-                              horizontal: 20,
-                              vertical: 8,
-                            ),
-                            leading: UserAvatar(
-                              avatarId: avatarData?.avatarId,
-                              profilePicBase64: avatarData?.profilePicBase64,
-                              profilePicUrl: avatarData?.profilePicUrl,
-                              displayName: senderName,
-                              onTap: () => UserAvatar.showViewer(
-                                context,
-                                avatarId: avatarData?.avatarId,
-                                profilePicBase64: avatarData?.profilePicBase64,
-                                profilePicUrl: avatarData?.profilePicUrl,
-                                displayName: senderName,
-                              ),
-                            ),
-                            title: Text(
-                              senderName,
-                              style: TextStyle(
-                                fontWeight: isUnread
-                                    ? FontWeight.bold
-                                    : FontWeight.normal,
-                                fontSize: 16,
-                              ),
-                            ),
-                            subtitle: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                const SizedBox(height: 4),
-                                if (_selectedInboxTab == 1)
-                                  Text(
-                                    thread.subject.isEmpty
-                                        ? 'No subject'
-                                        : thread.subject,
-                                    style: TextStyle(
-                                      color: Theme.of(
-                                        context,
-                                      ).colorScheme.onSurface,
-                                      fontWeight: isUnread
-                                          ? FontWeight.w600
-                                          : FontWeight.normal,
-                                    ),
-                                  ),
-                                Text(
-                                  thread.message,
-                                  maxLines: 1,
-                                  overflow: TextOverflow.ellipsis,
-                                ),
-                              ],
-                            ),
-                            trailing: isUnread
-                                ? Container(
-                                    width: 10,
-                                    height: 10,
-                                    decoration: BoxDecoration(
-                                      color: Theme.of(
-                                        context,
-                                      ).colorScheme.primary,
-                                      shape: BoxShape.circle,
-                                    ),
-                                  )
-                                : null,
-                            onTap: () => _showEmailDetails({
-                              'threadId': thread.threadId,
-                              'otherUserId': thread.otherUserId,
-                              'otherUserName': thread.otherUserName,
-                              'subject': thread.subject,
-                              'channel': _selectedInboxTab == 0
-                                  ? 'chat'
-                                  : 'mail',
-                            }),
-                          );
-                        },
-                      ),
+                ),
               ),
             ],
           );
@@ -4719,6 +5296,7 @@ class _MainScreenState extends State<MainScreen> {
     // Ensure the message listener is active when the app is running
     final user = Provider.of<User?>(context);
     _setupMessageListener(user);
+    _setupAcademicNotificationListeners(user);
 
     return Scaffold(
       extendBody: true,

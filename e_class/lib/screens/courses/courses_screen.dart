@@ -12,50 +12,19 @@ class CoursesScreen extends StatefulWidget {
 
 class _CoursesScreenState extends State<CoursesScreen> {
   final CoursesService _coursesService = CoursesService();
-  final List<String> _semesters = const [
-    'Fall 2025',
-    'Spring 2026',
-    'Fall 2026',
-  ];
-  int _currentWeek = 1;
-  late String _selectedSemester;
-
-  @override
-  void initState() {
-    super.initState();
-    _selectedSemester = 'Spring 2026';
-    _currentWeek = _weekForSemester(_selectedSemester);
-    _initCoursesData();
-  }
-
-  int get _currentSemesterIndex => _semesters.indexOf(_selectedSemester);
-
-  String get _semesterHeaderLabel {
-    if (_selectedSemester == 'Spring 2026') return 'Spring Semester 2026';
-    if (_selectedSemester == 'Fall 2025') return 'Fall Semester 2025';
-    return 'Fall Semester 2026';
-  }
-
-  Future<void> _initCoursesData() async {
-    try {
-      await _coursesService.syncData();
-    } catch (_) {}
-
-    if (!mounted) return;
-    setState(() {
-      _currentWeek = _weekForSemester(_selectedSemester);
-    });
-  }
+  String? _selectedSemester;
 
   int _weekForSemester(String semester) {
+    final lower = semester.toLowerCase();
     DateTime start;
-    if (semester == 'Fall 2025') {
+    if (lower.contains('fall') && lower.contains('2025')) {
       start = DateTime(2025, 9, 8);
-    } else if (semester == 'Spring 2026') {
+    } else if (lower.contains('spring') && lower.contains('2026')) {
       start = DateTime(2026, 2, 7);
-    } else {
-      // Fall 2026 placeholder start until exact dates are provided.
+    } else if (lower.contains('fall') && lower.contains('2026')) {
       start = DateTime(2026, 9, 7);
+    } else {
+      return 1;
     }
 
     final diff = DateTime.now().difference(start).inDays;
@@ -67,160 +36,217 @@ class _CoursesScreenState extends State<CoursesScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final colorScheme = Theme.of(context).colorScheme;
+    final scheme = Theme.of(context).colorScheme;
 
     return Scaffold(
-      backgroundColor: colorScheme.surface,
+      backgroundColor: scheme.surface,
       appBar: AppBar(
         automaticallyImplyLeading: false,
-        centerTitle: true,
-        elevation: 0,
-        scrolledUnderElevation: 0,
-        title: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            IconButton(
-              icon: const Icon(Icons.chevron_left_rounded, size: 38),
-              onPressed: _currentSemesterIndex > 0
-                  ? () => setState(() {
-                      _selectedSemester = _semesters[_currentSemesterIndex - 1];
-                      _currentWeek = _weekForSemester(_selectedSemester);
-                    })
-                  : null,
-            ),
-            Text(
-              _semesterHeaderLabel,
-              style: const TextStyle(fontSize: 22, fontWeight: FontWeight.w700),
-            ),
-            IconButton(
-              icon: const Icon(Icons.chevron_right_rounded, size: 38),
-              onPressed: _currentSemesterIndex < _semesters.length - 1
-                  ? () => setState(() {
-                      _selectedSemester = _semesters[_currentSemesterIndex + 1];
-                      _currentWeek = _weekForSemester(_selectedSemester);
-                    })
-                  : null,
-            ),
-          ],
+        centerTitle: false,
+        title: const Text(
+          'Courses',
+          style: TextStyle(fontWeight: FontWeight.w800),
         ),
       ),
       body: StreamBuilder<List<Course>>(
-        stream: _coursesService.getCourses(_selectedSemester),
+        stream: _coursesService.getCourses(),
         builder: (context, snapshot) {
           if (snapshot.hasError) {
-            return Center(child: Text('Error: ${snapshot.error}'));
-          }
-
-          if (snapshot.connectionState == ConnectionState.waiting) {
-            return const Center(child: CircularProgressIndicator());
-          }
-
-          final courses = snapshot.data ?? [];
-
-          if (courses.isEmpty) {
-            return const Center(
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  Icon(Icons.class_outlined, size: 64, color: Colors.grey),
-                  SizedBox(height: 16),
-                  Text(
-                    'No courses found',
-                    style: TextStyle(color: Colors.grey, fontSize: 16),
-                  ),
-                ],
+            return Center(
+              child: Text(
+                'Could not load courses right now.',
+                style: TextStyle(color: scheme.error),
               ),
             );
           }
 
-          return ListView.builder(
-            padding: const EdgeInsets.fromLTRB(16, 10, 16, 112),
-            itemCount: courses.length,
-            itemBuilder: (context, index) {
-              final course = courses[index];
+          if (!snapshot.hasData) {
+            return const Center(child: CircularProgressIndicator());
+          }
 
-              return Container(
-                margin: const EdgeInsets.only(bottom: 16),
-                decoration: BoxDecoration(
-                  color: colorScheme.surfaceContainerHigh,
-                  borderRadius: BorderRadius.circular(28),
-                  boxShadow: [
-                    BoxShadow(
-                      color: Colors.black.withValues(alpha: 0.18),
-                      blurRadius: 18,
-                      offset: const Offset(0, 6),
-                    ),
-                  ],
-                ),
-                child: Material(
-                  color: Colors.transparent,
-                  child: InkWell(
-                    borderRadius: BorderRadius.circular(28),
-                    onTap: () {
-                      Navigator.push(
-                        context,
-                        MaterialPageRoute(
-                          builder: (context) => CourseDetailScreen(
-                            course: course,
-                            currentWeek: _currentWeek,
-                          ),
+          final allCourses = snapshot.data ?? const <Course>[];
+          final semesters = allCourses
+              .map((course) => course.semester.trim())
+              .where((semester) => semester.isNotEmpty)
+              .toSet()
+              .toList()
+            ..sort();
+
+          final selectedSemester = _selectedSemester == null ||
+                  !semesters.contains(_selectedSemester)
+              ? (semesters.isNotEmpty ? semesters.last : null)
+              : _selectedSemester;
+
+          final courses = selectedSemester == null
+              ? allCourses
+              : allCourses
+                    .where((course) => course.semester == selectedSemester)
+                    .toList();
+
+          return Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              if (semesters.isNotEmpty)
+                SizedBox(
+                  height: 62,
+                  child: ListView(
+                    scrollDirection: Axis.horizontal,
+                    padding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
+                    children: semesters.map((semester) {
+                      final isSelected = semester == selectedSemester;
+                      return Padding(
+                        padding: const EdgeInsets.only(right: 8),
+                        child: ChoiceChip(
+                          label: Text(semester),
+                          selected: isSelected,
+                          showCheckmark: false,
+                          onSelected: (_) =>
+                              setState(() => _selectedSemester = semester),
                         ),
                       );
-                    },
-                    child: Padding(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 20,
-                        vertical: 18,
-                      ),
-                      child: Row(
-                        children: [
-                          CircleAvatar(
-                            radius: 36,
-                            backgroundColor: colorScheme.primary.withValues(
-                              alpha: 0.36,
-                            ),
-                            child: Icon(
-                              _getIconData(course.icon),
-                              size: 36,
-                              color: colorScheme.onPrimaryContainer,
-                            ),
-                          ),
-                          const SizedBox(width: 18),
-                          Expanded(
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Text(
-                                  course.title,
-                                  maxLines: 2,
-                                  overflow: TextOverflow.ellipsis,
-                                  style: TextStyle(
-                                    fontWeight: FontWeight.w700,
-                                    fontSize: 23,
-                                    color: colorScheme.onSurface,
-                                  ),
-                                ),
-                                const SizedBox(height: 6),
-                                Text(
-                                  'Week $_currentWeek${course.professorName.isNotEmpty ? ' вЂў ${course.professorName}' : ''}',
-                                  maxLines: 1,
-                                  overflow: TextOverflow.ellipsis,
-                                  style: TextStyle(
-                                    fontSize: 18,
-                                    color: colorScheme.onSurfaceVariant,
-                                    fontWeight: FontWeight.w500,
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ),
-                        ],
-                      ),
+                    }).toList(),
+                  ),
+                ),
+              if (selectedSemester != null)
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 4, 16, 8),
+                  child: Text(
+                    'Week ${_weekForSemester(selectedSemester)} • ${courses.length} course${courses.length == 1 ? '' : 's'}',
+                    style: TextStyle(
+                      color: scheme.onSurfaceVariant,
+                      fontWeight: FontWeight.w600,
                     ),
                   ),
                 ),
-              );
-            },
+              Expanded(
+                child: courses.isEmpty
+                    ? Center(
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(horizontal: 28),
+                          child: Column(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              Icon(
+                                Icons.class_outlined,
+                                size: 60,
+                                color: scheme.outline,
+                              ),
+                              const SizedBox(height: 16),
+                              Text(
+                                'No courses available yet',
+                                style: Theme.of(context)
+                                    .textTheme
+                                    .titleMedium
+                                    ?.copyWith(fontWeight: FontWeight.w800),
+                                textAlign: TextAlign.center,
+                              ),
+                              const SizedBox(height: 8),
+                              Text(
+                                semesters.isEmpty
+                                    ? 'Your subjects will appear here once they are published for your semester.'
+                                    : 'Try another semester or check back when your subjects are published.',
+                                style: TextStyle(color: scheme.onSurfaceVariant),
+                                textAlign: TextAlign.center,
+                              ),
+                            ],
+                          ),
+                        ),
+                      )
+                    : ListView.builder(
+                        padding: const EdgeInsets.fromLTRB(16, 8, 16, 112),
+                        itemCount: courses.length,
+                        itemBuilder: (context, index) {
+                          final course = courses[index];
+                          return Container(
+                            margin: const EdgeInsets.only(bottom: 14),
+                            decoration: BoxDecoration(
+                              color: scheme.surfaceContainerHigh,
+                              borderRadius: BorderRadius.circular(24),
+                              boxShadow: [
+                                BoxShadow(
+                                  color: Colors.black.withValues(alpha: 0.08),
+                                  blurRadius: 18,
+                                  offset: const Offset(0, 6),
+                                ),
+                              ],
+                            ),
+                            child: Material(
+                              color: Colors.transparent,
+                              child: InkWell(
+                                borderRadius: BorderRadius.circular(24),
+                                onTap: () {
+                                  Navigator.push(
+                                    context,
+                                    MaterialPageRoute(
+                                      builder: (context) => CourseDetailScreen(
+                                        course: course,
+                                        currentWeek: _weekForSemester(
+                                          course.semester,
+                                        ),
+                                      ),
+                                    ),
+                                  );
+                                },
+                                child: Padding(
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 18,
+                                    vertical: 16,
+                                  ),
+                                  child: Row(
+                                    children: [
+                                      CircleAvatar(
+                                        radius: 30,
+                                        backgroundColor:
+                                            scheme.primary.withValues(alpha: 0.14),
+                                        child: Icon(
+                                          _getIconData(course.icon),
+                                          color: scheme.primary,
+                                        ),
+                                      ),
+                                      const SizedBox(width: 16),
+                                      Expanded(
+                                        child: Column(
+                                          crossAxisAlignment:
+                                              CrossAxisAlignment.start,
+                                          children: [
+                                            Text(
+                                              course.title,
+                                              maxLines: 2,
+                                              overflow: TextOverflow.ellipsis,
+                                              style: const TextStyle(
+                                                fontWeight: FontWeight.w800,
+                                                fontSize: 18,
+                                              ),
+                                            ),
+                                            const SizedBox(height: 6),
+                                            Text(
+                                              [
+                                                course.semester,
+                                                if (course.professorName.isNotEmpty)
+                                                  course.professorName,
+                                              ].join(' • '),
+                                              maxLines: 1,
+                                              overflow: TextOverflow.ellipsis,
+                                              style: TextStyle(
+                                                color: scheme.onSurfaceVariant,
+                                                fontWeight: FontWeight.w600,
+                                              ),
+                                            ),
+                                          ],
+                                        ),
+                                      ),
+                                      const SizedBox(width: 8),
+                                      const Icon(Icons.chevron_right_rounded),
+                                    ],
+                                  ),
+                                ),
+                              ),
+                            ),
+                          );
+                        },
+                      ),
+              ),
+            ],
           );
         },
       ),
@@ -230,32 +256,32 @@ class _CoursesScreenState extends State<CoursesScreen> {
   IconData _getIconData(String iconName) {
     switch (iconName) {
       case 'code':
-        return Icons.code;
+        return Icons.code_rounded;
       case 'calculate':
-        return Icons.calculate;
+        return Icons.calculate_rounded;
       case 'science':
-        return Icons.science;
+        return Icons.science_rounded;
       case 'history':
-        return Icons.history;
+        return Icons.history_edu_rounded;
       case 'language':
       case 'translate':
-        return Icons.translate;
+        return Icons.translate_rounded;
       case 'design_services':
-        return Icons.design_services;
+        return Icons.design_services_rounded;
       case 'art_track':
-        return Icons.art_track;
+        return Icons.art_track_rounded;
       case 'computer':
-        return Icons.computer;
+        return Icons.computer_rounded;
       case 'music_note':
-        return Icons.music_note;
+        return Icons.music_note_rounded;
       case 'business_center':
-        return Icons.business_center;
+        return Icons.business_center_rounded;
       case 'gavel':
-        return Icons.gavel;
+        return Icons.gavel_rounded;
       case 'biotech':
-        return Icons.biotech;
+        return Icons.biotech_rounded;
       default:
-        return Icons.book;
+        return Icons.book_rounded;
     }
   }
 }
