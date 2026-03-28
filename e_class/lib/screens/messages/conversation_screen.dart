@@ -10,6 +10,43 @@ import 'package:provider/provider.dart';
 
 enum _PendingMessageStatus { sending, sent, failed }
 
+class _OfficeHoursSlot {
+  const _OfficeHoursSlot({
+    required this.weekday,
+    required this.startHour,
+    required this.startMinute,
+    required this.endHour,
+    required this.endMinute,
+  });
+
+  final int weekday;
+  final int startHour;
+  final int startMinute;
+  final int endHour;
+  final int endMinute;
+}
+
+String _weekdayShortLabel(int weekday) {
+  switch (weekday) {
+    case DateTime.monday:
+      return 'Mon';
+    case DateTime.tuesday:
+      return 'Tue';
+    case DateTime.wednesday:
+      return 'Wed';
+    case DateTime.thursday:
+      return 'Thu';
+    case DateTime.friday:
+      return 'Fri';
+    case DateTime.saturday:
+      return 'Sat';
+    case DateTime.sunday:
+      return 'Sun';
+    default:
+      return '';
+  }
+}
+
 class _ReplyPreviewData {
   const _ReplyPreviewData({
     required this.messageId,
@@ -212,6 +249,25 @@ class _ConversationScreenState extends State<ConversationScreen> {
   static const Color _telegramBlue = Color(0xFF5682A3);
   static const Color _telegramBlueDark = Color(0xFF3B70A2);
   static const Color _telegramGreen = Color(0xFFDCF8C6);
+  static const String _officeHoursThreadId = 'office_hours_ae2';
+  static const String _officeHoursGroupId = 'office_hours_group';
+  static const String _officeHoursTitle = 'Office hours • AE2';
+  static const List<_OfficeHoursSlot> _officeHoursSchedule = [
+    _OfficeHoursSlot(
+      weekday: DateTime.monday,
+      startHour: 10,
+      startMinute: 0,
+      endHour: 12,
+      endMinute: 0,
+    ),
+    _OfficeHoursSlot(
+      weekday: DateTime.wednesday,
+      startHour: 14,
+      startMinute: 0,
+      endHour: 16,
+      endMinute: 0,
+    ),
+  ];
 
   final TextEditingController _messageController = TextEditingController();
   final TextEditingController _searchController = TextEditingController();
@@ -230,6 +286,8 @@ class _ConversationScreenState extends State<ConversationScreen> {
 
   List<_PendingMessage> _pendingMessages = const <_PendingMessage>[];
   String _searchQuery = '';
+  List<_ChatMessageItem> _officeHoursLocalMessages = const <_ChatMessageItem>[];
+  Timer? _officeHoursRefreshTimer;
 
   bool _isDarkMode(BuildContext context) =>
       Theme.of(context).brightness == Brightness.dark;
@@ -258,17 +316,104 @@ class _ConversationScreenState extends State<ConversationScreen> {
   Color _composerColor(BuildContext context) =>
       _isDarkMode(context) ? const Color(0xFF17212B) : Colors.white;
 
+  bool get _isOfficeHoursThread => widget.threadId == _officeHoursThreadId;
+
+  DateTimeRange _windowForSlot(DateTime anchor, _OfficeHoursSlot slot) {
+    return DateTimeRange(
+      start: DateTime(
+        anchor.year,
+        anchor.month,
+        anchor.day,
+        slot.startHour,
+        slot.startMinute,
+      ),
+      end: DateTime(
+        anchor.year,
+        anchor.month,
+        anchor.day,
+        slot.endHour,
+        slot.endMinute,
+      ),
+    );
+  }
+
+  DateTimeRange? _activeOfficeHoursWindow(DateTime now) {
+    for (final slot in _officeHoursSchedule) {
+      if (slot.weekday != now.weekday) continue;
+      final window = _windowForSlot(now, slot);
+      final started =
+          now.isAfter(window.start) || now.isAtSameMomentAs(window.start);
+      if (started && now.isBefore(window.end)) {
+        return window;
+      }
+    }
+    return null;
+  }
+
+  DateTimeRange? _nextOfficeHoursWindow(DateTime now) {
+    DateTimeRange? nextWindow;
+    for (var offset = 0; offset < 7; offset++) {
+      final day = DateTime(
+        now.year,
+        now.month,
+        now.day,
+      ).add(Duration(days: offset));
+      for (final slot in _officeHoursSchedule) {
+        if (slot.weekday != day.weekday) continue;
+        final window = _windowForSlot(day, slot);
+        if (window.end.isBefore(now) || window.end.isAtSameMomentAs(now)) {
+          continue;
+        }
+        if (nextWindow == null || window.start.isBefore(nextWindow.start)) {
+          nextWindow = window;
+        }
+      }
+    }
+    return nextWindow;
+  }
+
+  DateTimeRange _officeHoursWindow(DateTime now) {
+    return _activeOfficeHoursWindow(now) ??
+        _nextOfficeHoursWindow(now) ??
+        _windowForSlot(now, _officeHoursSchedule.first);
+  }
+
+  bool _isOfficeHoursOpen(DateTime now) {
+    return _activeOfficeHoursWindow(now) != null;
+  }
+
+  String _officeHoursLabel(DateTime now) {
+    final window = _officeHoursWindow(now);
+    final startLabel =
+        '${window.start.hour.toString().padLeft(2, '0')}:${window.start.minute.toString().padLeft(2, '0')}';
+    final endLabel =
+        '${window.end.hour.toString().padLeft(2, '0')}:${window.end.minute.toString().padLeft(2, '0')}';
+    final includeDay = !_isOfficeHoursOpen(now) || window.start.weekday != now.weekday;
+    if (!includeDay) {
+      return '$startLabel-$endLabel';
+    }
+    return '${_weekdayShortLabel(window.start.weekday)} $startLabel-$endLabel';
+  }
+
   @override
   void initState() {
     super.initState();
     _messageController.addListener(_handleComposerChanged);
     _searchController.addListener(_handleSearchChanged);
+    if (_isOfficeHoursThread) {
+      _officeHoursRefreshTimer = Timer.periodic(const Duration(minutes: 1), (_) {
+        if (mounted) {
+          setState(() {});
+        }
+      });
+    }
   }
 
   @override
   void dispose() {
     _messageController.removeListener(_handleComposerChanged);
     _searchController.removeListener(_handleSearchChanged);
+    _officeHoursRefreshTimer?.cancel();
     _messageController.dispose();
     _searchController.dispose();
     _scrollController.dispose();
@@ -536,6 +681,48 @@ class _ConversationScreenState extends State<ConversationScreen> {
     if (a == null || b == null) return false;
     return a.senderId == b.senderId && _isSameDay(a.createdAt, b.createdAt);
   }
+
+  List<_ChatMessageItem> _officeHoursItems(User user) {
+    final now = DateTime.now();
+    final window = _officeHoursWindow(now);
+    final start = window.start.subtract(const Duration(minutes: 5));
+    final teacherId = _officeHoursGroupId;
+    final teacherName = 'AE2 Instructor';
+
+    final base = <_ChatMessageItem>[
+      _ChatMessageItem(
+        key: 'office_1',
+        senderId: teacherId,
+        senderName: teacherName,
+        message:
+            'Office hours for AE2: ${_officeHoursLabel(now)}. Chat is open only during this time.',
+        createdAt: start.toLocal(),
+        createdAtClient: Timestamp.fromDate(start),
+        isMine: false,
+        isEdited: false,
+        isReadByRecipient: true,
+        messageType: 'text',
+        reactions: const <String, List<String>>{},
+      ),
+      _ChatMessageItem(
+        key: 'office_2',
+        senderId: teacherId,
+        senderName: teacherName,
+        message: 'Please drop your questions here during the session.',
+        createdAt: start.add(const Duration(minutes: 2)).toLocal(),
+        createdAtClient: Timestamp.fromDate(start.add(const Duration(minutes: 2))),
+        isMine: false,
+        isEdited: false,
+        isReadByRecipient: true,
+        messageType: 'text',
+        reactions: const <String, List<String>>{},
+      ),
+    ];
+
+    final combined = [...base, ..._officeHoursLocalMessages];
+    combined.sort((a, b) => a.createdAt.compareTo(b.createdAt));
+    return combined;
+  }
   void _setReplyTarget(_ChatMessageItem item) {
     setState(() {
       _editingMessageId = null;
@@ -585,6 +772,45 @@ class _ConversationScreenState extends State<ConversationScreen> {
 
     final user = Provider.of<User?>(context, listen: false);
     if (user == null) return;
+
+    if (_isOfficeHoursThread) {
+      final now = DateTime.now();
+      if (!_isOfficeHoursOpen(now)) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              'Chat opens during office hours (${_officeHoursLabel(now)}).',
+            ),
+          ),
+        );
+        return;
+      }
+
+      final createdAtClient = Timestamp.now();
+      final item = _ChatMessageItem(
+        key: 'local_${user.uid}_${createdAtClient.millisecondsSinceEpoch}',
+        senderId: user.uid,
+        senderName: user.displayName?.trim().isNotEmpty == true
+            ? user.displayName!.trim()
+            : 'You',
+        message: text,
+        createdAt: createdAtClient.toDate().toLocal(),
+        createdAtClient: createdAtClient,
+        isMine: true,
+        isEdited: false,
+        isReadByRecipient: false,
+        messageType: 'text',
+        reactions: const <String, List<String>>{},
+      );
+
+      setState(() {
+        _officeHoursLocalMessages = [..._officeHoursLocalMessages, item];
+        _messageController.clear();
+        _hasComposerText = false;
+      });
+      _scheduleScrollToBottom(_officeHoursLocalMessages.length + 2);
+      return;
+    }
 
     setState(() => _sending = true);
 
@@ -1076,7 +1302,10 @@ class _ConversationScreenState extends State<ConversationScreen> {
   Widget _buildComposer() {
     final composerColor = _composerColor(context);
     final muted = _mutedTextColor(context);
-    final canSend = _hasComposerText || _editingMessageId != null;
+    final now = DateTime.now();
+    final isOffice = _isOfficeHoursThread;
+    final isOpen = !isOffice || _isOfficeHoursOpen(now);
+    final canSend = (_hasComposerText || _editingMessageId != null) && isOpen;
 
     return SafeArea(
       top: false,
@@ -1085,6 +1314,29 @@ class _ConversationScreenState extends State<ConversationScreen> {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
+            if (isOffice)
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                margin: const EdgeInsets.only(bottom: 6),
+                decoration: BoxDecoration(
+                  color: composerColor,
+                  borderRadius: BorderRadius.circular(14),
+                  border: Border.all(
+                    color: _chatHeaderColor(context).withValues(alpha: 0.2),
+                  ),
+                ),
+                child: Text(
+                  isOpen
+                      ? 'Office hours are open now (${_officeHoursLabel(now)}).'
+                      : 'Office hours are closed. Opens ${_officeHoursLabel(now)}.',
+                  style: TextStyle(
+                    color: muted,
+                    fontSize: 12,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ),
             if (_replyTarget != null || _editingMessageId != null)
               Container(
                 padding: const EdgeInsets.fromLTRB(12, 10, 8, 10),
@@ -1177,7 +1429,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
                       crossAxisAlignment: CrossAxisAlignment.end,
                       children: [
                         IconButton(
-                          onPressed: () {},
+                          onPressed: isOpen ? () {} : null,
                           icon: Icon(Icons.attach_file_rounded, color: muted),
                         ),
                         Expanded(
@@ -1186,8 +1438,11 @@ class _ConversationScreenState extends State<ConversationScreen> {
                             minLines: 1,
                             maxLines: 6,
                             textCapitalization: TextCapitalization.sentences,
+                            enabled: isOpen,
                             decoration: InputDecoration(
-                              hintText: 'Message',
+                              hintText: isOpen
+                                  ? 'Message'
+                                  : 'Chat is closed',
                               hintStyle: TextStyle(color: muted),
                               border: InputBorder.none,
                               contentPadding: const EdgeInsets.symmetric(
@@ -1197,7 +1452,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
                           ),
                         ),
                         IconButton(
-                          onPressed: () {},
+                          onPressed: isOpen ? () {} : null,
                           icon: Icon(
                             Icons.sentiment_satisfied_alt_rounded,
                             color: muted,
@@ -1226,6 +1481,16 @@ class _ConversationScreenState extends State<ConversationScreen> {
                       onPressed: canSend
                           ? (_sending ? null : _handleSendOrUpdate)
                           : () {
+                              if (isOffice && !isOpen) {
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  SnackBar(
+                                    content: Text(
+                                      'Chat opens during office hours (${_officeHoursLabel(now)}).',
+                                    ),
+                                  ),
+                                );
+                                return;
+                              }
                               ScaffoldMessenger.of(context).showSnackBar(
                                 const SnackBar(
                                   content: Text(
@@ -1297,6 +1562,93 @@ class _ConversationScreenState extends State<ConversationScreen> {
     );
   }
 
+  Widget _buildOfficeHoursList(User user) {
+    final muted = _mutedTextColor(context);
+    final items = _filterItems(_officeHoursItems(user));
+    _scheduleScrollToBottom(items.length);
+
+    if (items.isEmpty) {
+      return Center(
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 28),
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Icon(
+                Icons.chat_bubble_outline_rounded,
+                color: muted,
+                size: 44,
+              ),
+              const SizedBox(height: 12),
+              Text(
+                'Office hours chat',
+                style: TextStyle(
+                  color: _incomingTextColor(context),
+                  fontSize: 18,
+                  fontWeight: FontWeight.w800,
+                ),
+              ),
+              const SizedBox(height: 8),
+              Text(
+                'This chat is available only during office hours.',
+                textAlign: TextAlign.center,
+                style: TextStyle(color: muted),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+
+    return ListView.builder(
+      controller: _scrollController,
+      padding: const EdgeInsets.fromLTRB(8, 8, 8, 14),
+      itemCount: items.length,
+      itemBuilder: (context, index) {
+        final item = items[index];
+        final previous = index > 0 ? items[index - 1] : null;
+        final next = index < items.length - 1 ? items[index + 1] : null;
+        final showDayDivider = previous == null ||
+            !_isSameDay(previous.createdAt, item.createdAt);
+
+        return Column(
+          children: [
+            if (showDayDivider)
+              Padding(
+                padding: const EdgeInsets.symmetric(vertical: 10),
+                child: Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 12,
+                    vertical: 6,
+                  ),
+                  decoration: BoxDecoration(
+                    color: _isDarkMode(context)
+                        ? Colors.black.withValues(alpha: 0.28)
+                        : Colors.white.withValues(alpha: 0.76),
+                    borderRadius: BorderRadius.circular(999),
+                  ),
+                  child: Text(
+                    _formatDayDivider(item.createdAt),
+                    style: TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.w700,
+                      color: muted,
+                    ),
+                  ),
+                ),
+              ),
+            _buildMessageBubble(
+              item,
+              user,
+              joinsPrevious: _isSameSender(previous, item),
+              joinsNext: _isSameSender(item, next),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final user = Provider.of<User?>(context);
@@ -1316,13 +1668,58 @@ class _ConversationScreenState extends State<ConversationScreen> {
           onPressed: () => Navigator.pop(context),
         ),
         title: StreamBuilder<DocumentSnapshot>(
-          stream: widget.recipientId.isNotEmpty
-              ? FirebaseFirestore.instance
-                  .collection('users')
-                  .doc(widget.recipientId)
-                  .snapshots()
-              : const Stream.empty(),
+          stream: _isOfficeHoursThread
+              ? const Stream.empty()
+              : (widget.recipientId.isNotEmpty
+                  ? FirebaseFirestore.instance
+                      .collection('users')
+                      .doc(widget.recipientId)
+                      .snapshots()
+                  : const Stream.empty()),
           builder: (context, snapshot) {
+            if (_isOfficeHoursThread) {
+              final now = DateTime.now();
+              final isOpen = _isOfficeHoursOpen(now);
+              return Row(
+                children: [
+                  CircleAvatar(
+                    backgroundColor: Colors.white.withValues(alpha: 0.2),
+                    child: const Icon(
+                      Icons.schedule_rounded,
+                      color: Colors.white,
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          _officeHoursTitle,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                            fontSize: 16,
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
+                        Text(
+                          isOpen
+                              ? 'Open now • ${_officeHoursLabel(now)}'
+                              : 'Closed • ${_officeHoursLabel(now)}',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                            fontSize: 12,
+                            color: Colors.white70,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              );
+            }
             final profile = snapshot.data?.data() as Map<String, dynamic>?;
             if (_isSearching) {
               return TextField(
@@ -1427,103 +1824,122 @@ class _ConversationScreenState extends State<ConversationScreen> {
                 Column(
                   children: [
                     Expanded(
-                      child: StreamBuilder<QuerySnapshot>(
-                        stream: DatabaseService(user: user).emailMessages,
-                        builder: (context, snapshot) {
-                          if (!snapshot.hasData) {
-                            return const Center(child: CircularProgressIndicator());
-                          }
+                      child: _isOfficeHoursThread
+                          ? _buildOfficeHoursList(user)
+                          : StreamBuilder<QuerySnapshot>(
+                              stream: DatabaseService(user: user).emailMessages,
+                              builder: (context, snapshot) {
+                                if (!snapshot.hasData) {
+                                  return const Center(
+                                    child: CircularProgressIndicator(),
+                                  );
+                                }
 
-                          final threadDocs = _threadDocsForSnapshot(snapshot.data!, user);
-                          unawaited(_markThreadAsRead(user, threadDocs));
-                          _reconcilePendingMessages(threadDocs, user.uid);
-                          final items = _filterItems(
-                            _buildItems(threadDocs, user.uid),
-                          );
-                          _scheduleScrollToBottom(items.length);
+                                final threadDocs =
+                                    _threadDocsForSnapshot(snapshot.data!, user);
+                                unawaited(_markThreadAsRead(user, threadDocs));
+                                _reconcilePendingMessages(threadDocs, user.uid);
+                                final items = _filterItems(
+                                  _buildItems(threadDocs, user.uid),
+                                );
+                                _scheduleScrollToBottom(items.length);
 
-                          if (items.isEmpty) {
-                            return Center(
-                              child: Padding(
-                                padding: const EdgeInsets.symmetric(horizontal: 28),
-                                child: Column(
-                                  mainAxisAlignment: MainAxisAlignment.center,
-                                  children: [
-                                    Icon(
-                                      Icons.chat_bubble_outline_rounded,
-                                      color: muted,
-                                      size: 44,
-                                    ),
-                                    const SizedBox(height: 12),
-                                    Text(
-                                      'Start the conversation',
-                                      style: TextStyle(
-                                        color: _incomingTextColor(context),
-                                        fontSize: 18,
-                                        fontWeight: FontWeight.w800,
+                                if (items.isEmpty) {
+                                  return Center(
+                                    child: Padding(
+                                      padding: const EdgeInsets.symmetric(
+                                        horizontal: 28,
                                       ),
-                                    ),
-                                    const SizedBox(height: 8),
-                                    Text(
-                                      'Messages sent here will appear in real time.',
-                                      textAlign: TextAlign.center,
-                                      style: TextStyle(color: muted),
-                                    ),
-                                  ],
-                                ),
-                              ),
-                            );
-                          }
-
-                          return ListView.builder(
-                            controller: _scrollController,
-                            padding: const EdgeInsets.fromLTRB(8, 8, 8, 14),
-                            itemCount: items.length,
-                            itemBuilder: (context, index) {
-                              final item = items[index];
-                              final previous = index > 0 ? items[index - 1] : null;
-                              final next = index < items.length - 1 ? items[index + 1] : null;
-                              final showDayDivider = previous == null ||
-                                  !_isSameDay(previous.createdAt, item.createdAt);
-
-                              return Column(
-                                children: [
-                                  if (showDayDivider)
-                                    Padding(
-                                      padding: const EdgeInsets.symmetric(vertical: 10),
-                                      child: Container(
-                                        padding: const EdgeInsets.symmetric(
-                                          horizontal: 12,
-                                          vertical: 6,
-                                        ),
-                                        decoration: BoxDecoration(
-                                          color: _isDarkMode(context)
-                                              ? Colors.black.withValues(alpha: 0.28)
-                                              : Colors.white.withValues(alpha: 0.76),
-                                          borderRadius: BorderRadius.circular(999),
-                                        ),
-                                        child: Text(
-                                          _formatDayDivider(item.createdAt),
-                                          style: TextStyle(
-                                            fontSize: 12,
-                                            fontWeight: FontWeight.w700,
+                                      child: Column(
+                                        mainAxisAlignment: MainAxisAlignment.center,
+                                        children: [
+                                          Icon(
+                                            Icons.chat_bubble_outline_rounded,
                                             color: muted,
+                                            size: 44,
                                           ),
-                                        ),
+                                          const SizedBox(height: 12),
+                                          Text(
+                                            'Start the conversation',
+                                            style: TextStyle(
+                                              color: _incomingTextColor(context),
+                                              fontSize: 18,
+                                              fontWeight: FontWeight.w800,
+                                            ),
+                                          ),
+                                          const SizedBox(height: 8),
+                                          Text(
+                                            'Messages sent here will appear in real time.',
+                                            textAlign: TextAlign.center,
+                                            style: TextStyle(color: muted),
+                                          ),
+                                        ],
                                       ),
                                     ),
-                                  _buildMessageBubble(
-                                    item,
-                                    user,
-                                    joinsPrevious: _isSameSender(previous, item),
-                                    joinsNext: _isSameSender(item, next),
-                                  ),
-                                ],
-                              );
-                            },
-                          );
-                        },
-                      ),
+                                  );
+                                }
+
+                                return ListView.builder(
+                                  controller: _scrollController,
+                                  padding:
+                                      const EdgeInsets.fromLTRB(8, 8, 8, 14),
+                                  itemCount: items.length,
+                                  itemBuilder: (context, index) {
+                                    final item = items[index];
+                                    final previous =
+                                        index > 0 ? items[index - 1] : null;
+                                    final next = index < items.length - 1
+                                        ? items[index + 1]
+                                        : null;
+                                    final showDayDivider = previous == null ||
+                                        !_isSameDay(previous.createdAt, item.createdAt);
+
+                                    return Column(
+                                      children: [
+                                        if (showDayDivider)
+                                          Padding(
+                                            padding: const EdgeInsets.symmetric(
+                                              vertical: 10,
+                                            ),
+                                            child: Container(
+                                              padding: const EdgeInsets.symmetric(
+                                                horizontal: 12,
+                                                vertical: 6,
+                                              ),
+                                              decoration: BoxDecoration(
+                                                color: _isDarkMode(context)
+                                                    ? Colors.black.withValues(
+                                                        alpha: 0.28,
+                                                      )
+                                                    : Colors.white.withValues(
+                                                        alpha: 0.76,
+                                                      ),
+                                                borderRadius:
+                                                    BorderRadius.circular(999),
+                                              ),
+                                              child: Text(
+                                                _formatDayDivider(item.createdAt),
+                                                style: TextStyle(
+                                                  fontSize: 12,
+                                                  fontWeight: FontWeight.w700,
+                                                  color: muted,
+                                                ),
+                                              ),
+                                            ),
+                                          ),
+                                        _buildMessageBubble(
+                                          item,
+                                          user,
+                                          joinsPrevious:
+                                              _isSameSender(previous, item),
+                                          joinsNext: _isSameSender(item, next),
+                                        ),
+                                      ],
+                                    );
+                                  },
+                                );
+                              },
+                            ),
                     ),
                     _buildComposer(),
                   ],

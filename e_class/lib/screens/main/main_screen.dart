@@ -1,4 +1,4 @@
-﻿import 'dart:async';
+import 'dart:async';
 import 'dart:convert';
 import 'dart:ui' as ui;
 
@@ -25,6 +25,43 @@ import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:url_launcher/url_launcher.dart';
 
+class _OfficeHoursSlot {
+  const _OfficeHoursSlot({
+    required this.weekday,
+    required this.startHour,
+    required this.startMinute,
+    required this.endHour,
+    required this.endMinute,
+  });
+
+  final int weekday;
+  final int startHour;
+  final int startMinute;
+  final int endHour;
+  final int endMinute;
+}
+
+String _weekdayShortLabel(int weekday) {
+  switch (weekday) {
+    case DateTime.monday:
+      return 'Mon';
+    case DateTime.tuesday:
+      return 'Tue';
+    case DateTime.wednesday:
+      return 'Wed';
+    case DateTime.thursday:
+      return 'Thu';
+    case DateTime.friday:
+      return 'Fri';
+    case DateTime.saturday:
+      return 'Sat';
+    case DateTime.sunday:
+      return 'Sun';
+    default:
+      return '';
+  }
+}
+
 class _ScheduleEntry {
   const _ScheduleEntry({
     required this.dayIndex,
@@ -48,6 +85,7 @@ class _ScheduleEntry {
 class _GradeEntry {
   const _GradeEntry({
     required this.id,
+    required this.subjectCode,
     required this.subject,
     required this.grade,
     required this.credits,
@@ -56,6 +94,7 @@ class _GradeEntry {
   });
 
   final String id;
+  final String subjectCode;
   final String subject;
   final String grade;
   final int credits;
@@ -106,11 +145,13 @@ class _UserAvatarData {
     required this.avatarId,
     required this.profilePicBase64,
     required this.profilePicUrl,
+    required this.displayName,
   });
 
   final String avatarId;
   final String profilePicBase64;
   final String profilePicUrl;
+  final String displayName;
 }
 
 class MainScreen extends StatefulWidget {
@@ -135,6 +176,25 @@ class _MainScreenState extends State<MainScreen> {
   static const Color _telegramCanvas = Color(0xFFEFF4FA);
   static const Color _telegramSurface = Color(0xFFFFFFFF);
   static const Color _telegramMuted = Color(0xFF7B8A9A);
+  static const String _officeHoursThreadId = 'office_hours_ae2';
+  static const String _officeHoursGroupId = 'office_hours_group';
+  static const String _officeHoursLabel = 'Office hours • AE2';
+  static const List<_OfficeHoursSlot> _officeHoursSchedule = [
+    _OfficeHoursSlot(
+      weekday: DateTime.monday,
+      startHour: 10,
+      startMinute: 0,
+      endHour: 12,
+      endMinute: 0,
+    ),
+    _OfficeHoursSlot(
+      weekday: DateTime.wednesday,
+      startHour: 14,
+      startMinute: 0,
+      endHour: 16,
+      endMinute: 0,
+    ),
+  ];
 
   bool _isDarkMode(BuildContext context) =>
       Theme.of(context).brightness == Brightness.dark;
@@ -156,6 +216,81 @@ class _MainScreenState extends State<MainScreen> {
 
   Color _inboxPrimaryTextColor(BuildContext context) =>
       _isDarkMode(context) ? const Color(0xFFF5F7FA) : const Color(0xFF203040);
+
+  DateTimeRange _windowForSlot(DateTime anchor, _OfficeHoursSlot slot) {
+    return DateTimeRange(
+      start: DateTime(
+        anchor.year,
+        anchor.month,
+        anchor.day,
+        slot.startHour,
+        slot.startMinute,
+      ),
+      end: DateTime(
+        anchor.year,
+        anchor.month,
+        anchor.day,
+        slot.endHour,
+        slot.endMinute,
+      ),
+    );
+  }
+
+  DateTimeRange? _activeOfficeHoursWindow(DateTime now) {
+    for (final slot in _officeHoursSchedule) {
+      if (slot.weekday != now.weekday) continue;
+      final window = _windowForSlot(now, slot);
+      final started =
+          now.isAfter(window.start) || now.isAtSameMomentAs(window.start);
+      if (started && now.isBefore(window.end)) {
+        return window;
+      }
+    }
+    return null;
+  }
+
+  DateTimeRange? _nextOfficeHoursWindow(DateTime now) {
+    DateTimeRange? nextWindow;
+    for (var offset = 0; offset < 7; offset++) {
+      final day = DateTime(
+        now.year,
+        now.month,
+        now.day,
+      ).add(Duration(days: offset));
+      for (final slot in _officeHoursSchedule) {
+        if (slot.weekday != day.weekday) continue;
+        final window = _windowForSlot(day, slot);
+        if (window.end.isBefore(now) || window.end.isAtSameMomentAs(now)) {
+          continue;
+        }
+        if (nextWindow == null || window.start.isBefore(nextWindow.start)) {
+          nextWindow = window;
+        }
+      }
+    }
+    return nextWindow;
+  }
+
+  DateTimeRange _officeHoursWindow(DateTime now) {
+    return _activeOfficeHoursWindow(now) ??
+        _nextOfficeHoursWindow(now) ??
+        _windowForSlot(now, _officeHoursSchedule.first);
+  }
+
+  String _officeHoursPreviewMessage(DateTime now) {
+    final window = _officeHoursWindow(now);
+    final open = _activeOfficeHoursWindow(now) != null;
+    final startLabel =
+        '${window.start.hour.toString().padLeft(2, '0')}:${window.start.minute.toString().padLeft(2, '0')}';
+    final endLabel =
+        '${window.end.hour.toString().padLeft(2, '0')}:${window.end.minute.toString().padLeft(2, '0')}';
+    final formattedWindow = open || window.start.weekday == now.weekday
+        ? '$startLabel-$endLabel'
+        : '${_weekdayShortLabel(window.start.weekday)} $startLabel-$endLabel';
+    return open
+        ? 'Office hours open now ($formattedWindow)'
+        : 'Office hours open $formattedWindow';
+  }
 
   int _selectedIndex = 0;
   int _selectedInboxTab = 0;
@@ -606,6 +741,7 @@ class _MainScreenState extends State<MainScreen> {
           avatarId: (data['avatarId'] as String?)?.trim() ?? '',
           profilePicBase64: (data['profilePicBase64'] as String?)?.trim() ?? '',
           profilePicUrl: (data['profilePicUrl'] as String?)?.trim() ?? '',
+          displayName: (data['displayName'] as String?)?.trim() ?? '',
         );
       }
 
@@ -630,6 +766,7 @@ class _MainScreenState extends State<MainScreen> {
         'avatarId': data.avatarId,
         'profilePicBase64': data.profilePicBase64,
         'profilePicUrl': data.profilePicUrl,
+        'displayName': data.displayName,
       };
     });
 
@@ -1323,6 +1460,84 @@ class _MainScreenState extends State<MainScreen> {
     );
   }
 
+  void _openCourseFromGrade(
+    _GradeEntry entry,
+    Map<String, Map<String, dynamic>> subjectsByCode,
+  ) {
+    final scheduleEntry = _ScheduleEntry(
+      dayIndex: 1,
+      dayLabel: '',
+      time: '',
+      subjectCode: entry.subjectCode,
+      subject: entry.subject,
+      room: '',
+      professor: 'TBA',
+    );
+    final course = _courseFromScheduleEntry(scheduleEntry, subjectsByCode);
+    _openCourseDetails(course);
+  }
+
+  Course _courseFromSubjectMap(
+    String subjectCode,
+    Map<String, dynamic> subjectData,
+  ) {
+    final title =
+        (subjectData['title'] as String?)?.trim().isNotEmpty == true
+        ? (subjectData['title'] as String).trim()
+        : (subjectCode.trim().isEmpty ? 'Course' : subjectCode.trim());
+    final normalizedCode = subjectCode.trim().toUpperCase();
+    final courseIdSource = normalizedCode.isNotEmpty ? normalizedCode : title;
+    final courseId = courseIdSource
+        .toLowerCase()
+        .replaceAll(RegExp(r'[^a-z0-9]+'), '_')
+        .replaceAll(RegExp(r'^_+|_+$'), '');
+
+    return Course(
+      id: courseId.isEmpty ? 'course' : courseId,
+      title: title,
+      icon: (subjectData['icon'] as String?)?.trim().isNotEmpty == true
+          ? (subjectData['icon'] as String).trim()
+          : 'book',
+      professorId: (subjectData['professorId'] as String?)?.trim() ?? '',
+      professorName: (subjectData['professorName'] as String?)?.trim() ?? '',
+      semester: (subjectData['semester'] as String?)?.trim().isNotEmpty == true
+          ? (subjectData['semester'] as String).trim()
+          : 'Spring 2026',
+    );
+  }
+
+  void _openNearestDeadlineTask(
+    ({
+      String subjectCode,
+      String subject,
+      DateTime deadline,
+      int weekNumber,
+      String materialTitle,
+      String materialType,
+    }) nearestDeadline,
+    Map<String, Map<String, dynamic>> subjectsByCode,
+  ) {
+    final subjectCode = nearestDeadline.subjectCode.trim().toUpperCase();
+    final subjectData =
+        subjectCode.isNotEmpty ? subjectsByCode[subjectCode] : null;
+    final course = subjectData != null
+        ? _courseFromSubjectMap(subjectCode, subjectData)
+        : _courseFromTimetableCard(nearestDeadline.subject, '');
+
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => CourseDetailScreen(
+          course: course,
+          currentWeek: _currentAcademicWeek(),
+          initialWeek: nearestDeadline.weekNumber,
+          initialMaterialTitle: nearestDeadline.materialTitle,
+          initialMaterialType: nearestDeadline.materialType,
+        ),
+      ),
+    );
+  }
+
   int _currentAcademicWeek() {
     final start = DateTime(2026, 2, 7);
     final diffDays = DateTime.now().difference(start).inDays;
@@ -1782,6 +1997,7 @@ class _MainScreenState extends State<MainScreen> {
       entries.add(
         _GradeEntry(
           id: doc.id,
+          subjectCode: subjectCode,
           subject: _normalizedGradeSubject(
             subject.isEmpty ? subjectCode : subject,
           ),
@@ -2101,7 +2317,9 @@ class _MainScreenState extends State<MainScreen> {
 
     final syncKey = userIds.join(',');
     final hasMissingCachedAvatar = userIds.any(
-      (id) => !_threadAvatarCache.containsKey(id),
+      (id) =>
+          !_threadAvatarCache.containsKey(id) ||
+          _threadAvatarCache[id]!.displayName.trim().isEmpty,
     );
     if (!hasMissingCachedAvatar && syncKey == _lastAvatarSyncKey) {
       return;
@@ -2160,10 +2378,35 @@ class _MainScreenState extends State<MainScreen> {
 
       for (final doc in snapshot.docs) {
         final data = doc.data();
+        final fullName =
+            (data['fullName'] as String?)?.trim().isNotEmpty == true
+            ? (data['fullName'] as String).trim()
+            : '${(data['firstName'] as String?)?.trim() ?? ''} ${(data['lastName'] as String?)?.trim() ?? ''}'
+                  .trim();
         result[doc.id] = _UserAvatarData(
           avatarId: (data['avatarId'] as String?)?.trim() ?? '',
           profilePicBase64: (data['profilePicBase64'] as String?)?.trim() ?? '',
           profilePicUrl: (data['profilePicUrl'] as String?)?.trim() ?? '',
+          displayName: fullName,
+        );
+      }
+
+      final foundIds = snapshot.docs.map((doc) => doc.id).toSet();
+      final missingIds = chunk.where((id) => !foundIds.contains(id)).toList();
+      if (missingIds.isEmpty) continue;
+
+      final staffSnapshot = await FirebaseFirestore.instance
+          .collection('staff')
+          .where(FieldPath.documentId, whereIn: missingIds)
+          .get();
+
+      for (final doc in staffSnapshot.docs) {
+        final data = doc.data();
+        result[doc.id] = _UserAvatarData(
+          avatarId: '',
+          profilePicBase64: '',
+          profilePicUrl: (data['avatarUrl'] as String?)?.trim() ?? '',
+          displayName: (data['name'] as String?)?.trim() ?? '',
         );
       }
     }
@@ -2276,6 +2519,26 @@ class _MainScreenState extends State<MainScreen> {
             if (b.createdAt == null) return -1;
             return b.createdAt!.compareTo(a.createdAt!);
           });
+    if (channel == 'chat' &&
+        !orderedThreads.any(
+          (thread) => thread.threadId == _officeHoursThreadId,
+        )) {
+      final now = DateTime.now();
+      orderedThreads.insert(
+        0,
+        _EmailThreadPreview(
+          threadId: _officeHoursThreadId,
+          otherUserId: _officeHoursGroupId,
+          otherUserName: _officeHoursLabel,
+          subject: 'AE2',
+          message: _officeHoursPreviewMessage(now),
+          createdAt: Timestamp.fromDate(now),
+          hasUnread: false,
+          unreadCount: 0,
+          lastMessageIsMine: false,
+        ),
+      );
+    }
     return orderedThreads;
   }
 
@@ -2433,8 +2696,10 @@ class _MainScreenState extends State<MainScreen> {
     final muted = _inboxMutedColor(context);
     final primaryText = _inboxPrimaryTextColor(context);
     final isUnread = thread.hasUnread;
-    final senderName = thread.otherUserName;
     final avatarData = _threadAvatarCache[thread.otherUserId];
+    final senderName = avatarData?.displayName.trim().isNotEmpty == true
+        ? avatarData!.displayName.trim()
+        : thread.otherUserName;
     final preview = _threadPreviewLabel(thread, isChatTab);
     final timeLabel = _threadTimestampLabel(thread.createdAt);
 
@@ -2442,7 +2707,7 @@ class _MainScreenState extends State<MainScreen> {
       onTap: () => _showEmailDetails({
         'threadId': thread.threadId,
         'otherUserId': thread.otherUserId,
-        'otherUserName': thread.otherUserName,
+        'otherUserName': senderName,
         'subject': thread.subject,
         'channel': isChatTab ? 'chat' : 'mail',
       }),
@@ -3161,11 +3426,22 @@ class _MainScreenState extends State<MainScreen> {
     return null;
   }
 
-  ({String subject, DateTime deadline})?
+  ({
+    String subjectCode,
+    String subject,
+    DateTime deadline,
+    int weekNumber,
+    String materialTitle,
+    String materialType,
+  })?
   _nearestHomeworkDeadlineFromSubjectDocs(List<QueryDocumentSnapshot> docs) {
     final now = (_serverNow ?? _nowInTashkent()).toUtc();
     DateTime? nearest;
+    String nearestSubjectCode = '';
     String nearestSubject = '';
+    int nearestWeekNumber = 1;
+    String nearestMaterialTitle = '';
+    String nearestMaterialType = '';
 
     for (final doc in docs) {
       final data = doc.data() as Map<String, dynamic>?;
@@ -3186,6 +3462,21 @@ class _MainScreenState extends State<MainScreen> {
         final type = (item['type'] as String?)?.trim().toLowerCase() ?? '';
         if (type != 'homework') continue;
 
+        final materialTitle = (item['title'] as String?)?.trim() ?? '';
+        final weekNumber = _parseCredits(item['weekNumber']);
+        final normalizedWeekNumber = weekNumber > 0 ? weekNumber : 1;
+        final courseId = (subjectCode?.trim().isNotEmpty == true)
+            ? subjectCode!.trim().toUpperCase()
+            : doc.id.trim().toUpperCase();
+        if (materialTitle.isNotEmpty &&
+            CourseDetailScreen.hasUploadedHomework(
+              courseId: courseId,
+              weekNumber: normalizedWeekNumber,
+              materialTitle: materialTitle,
+            )) {
+          continue;
+        }
+
         final deadline = _updateDateFromValue(
           item['deadline'] ?? item['dueDate'],
         );
@@ -3196,13 +3487,24 @@ class _MainScreenState extends State<MainScreen> {
 
         if (nearest == null || deadlineUtc.isBefore(nearest)) {
           nearest = deadlineUtc;
+          nearestSubjectCode = courseId;
           nearestSubject = subject;
+          nearestWeekNumber = normalizedWeekNumber;
+          nearestMaterialTitle = materialTitle;
+          nearestMaterialType = type;
         }
       }
     }
 
     if (nearest == null) return null;
-    return (subject: nearestSubject, deadline: nearest);
+    return (
+      subjectCode: nearestSubjectCode,
+      subject: nearestSubject,
+      deadline: nearest,
+      weekNumber: nearestWeekNumber,
+      materialTitle: nearestMaterialTitle,
+      materialType: nearestMaterialType,
+    );
   }
 
   List<
@@ -3990,6 +4292,9 @@ class _MainScreenState extends State<MainScreen> {
                               final subjectDocs =
                                   homeInfoSnapshot.data?.docs ??
                                   const <QueryDocumentSnapshot<Object?>>[];
+                              final subjectsByCode = _buildSubjectIndex(
+                                subjectDocs.cast<QueryDocumentSnapshot>(),
+                              );
                               final nearestDeadline =
                                   _nearestHomeworkDeadlineFromSubjectDocs(
                                     subjectDocs,
@@ -4056,6 +4361,12 @@ class _MainScreenState extends State<MainScreen> {
                                         iconColor: Theme.of(
                                           context,
                                         ).colorScheme.error,
+                                        onTap: nearestDeadline == null
+                                            ? null
+                                            : () => _openNearestDeadlineTask(
+                                                nearestDeadline,
+                                                subjectsByCode,
+                                              ),
                                       ),
                                     ],
                                   ),
@@ -4467,7 +4778,11 @@ class _MainScreenState extends State<MainScreen> {
                                   color: Colors.transparent,
                                   child: InkWell(
                                     borderRadius: BorderRadius.circular(16),
-                                    onTap: () => _showGradeDetails(entry),
+                                    onTap: () => _openCourseFromGrade(
+                                      entry,
+                                      subjectsByCode,
+                                    ),
+                                    onLongPress: () => _showGradeDetails(entry),
                                     child: Padding(
                                       padding: const EdgeInsets.all(16),
                                       child: Row(
