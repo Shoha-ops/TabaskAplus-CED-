@@ -3091,8 +3091,34 @@ class _MainScreenState extends State<MainScreen> {
       return DateTime.fromMillisecondsSinceEpoch(millis);
     }
     if (value is String) {
-      return DateTime.tryParse(value);
+      return _tryParseFlexibleDateString(value);
     }
+    return null;
+  }
+
+  DateTime? _tryParseFlexibleDateString(String value) {
+    final trimmed = value.trim();
+    if (trimmed.isEmpty) return null;
+
+    final parsedIso = DateTime.tryParse(trimmed);
+    if (parsedIso != null) return parsedIso;
+
+    final dotDateTime = RegExp(
+      r'^(\d{1,2})[./-](\d{1,2})[./-](\d{4})(?:[ T](\d{1,2}):(\d{2})(?::(\d{2}))?)?$',
+    ).firstMatch(trimmed);
+    if (dotDateTime != null) {
+      final day = int.tryParse(dotDateTime.group(1) ?? '');
+      final month = int.tryParse(dotDateTime.group(2) ?? '');
+      final year = int.tryParse(dotDateTime.group(3) ?? '');
+      final hour = int.tryParse(dotDateTime.group(4) ?? '') ?? 0;
+      final minute = int.tryParse(dotDateTime.group(5) ?? '') ?? 0;
+      final second = int.tryParse(dotDateTime.group(6) ?? '') ?? 0;
+
+      if (day != null && month != null && year != null) {
+        return DateTime(year, month, day, hour, minute, second);
+      }
+    }
+
     return null;
   }
 
@@ -3120,21 +3146,10 @@ class _MainScreenState extends State<MainScreen> {
 
   String _announcementDateLabel(DateTime? dateTime) {
     if (dateTime == null) return 'Unknown';
-    const months = [
-      'Jan',
-      'Feb',
-      'Mar',
-      'Apr',
-      'May',
-      'Jun',
-      'Jul',
-      'Aug',
-      'Sep',
-      'Oct',
-      'Nov',
-      'Dec',
-    ];
-    return '${months[dateTime.month - 1]} ${dateTime.day.toString().padLeft(2, '0')}';
+    final day = dateTime.day.toString().padLeft(2, '0');
+    final month = dateTime.month.toString().padLeft(2, '0');
+    final year = dateTime.year.toString();
+    return '$day.$month.$year';
   }
 
   _ScheduleEntry? _activeClassEntry(List<_ScheduleEntry> entries) {
@@ -3146,12 +3161,19 @@ class _MainScreenState extends State<MainScreen> {
     return null;
   }
 
-  int _urgentDeadlinesCountFromSubjectDocs(List<QueryDocumentSnapshot> docs) {
+  ({String subject, DateTime deadline})?
+  _nearestHomeworkDeadlineFromSubjectDocs(List<QueryDocumentSnapshot> docs) {
     final now = (_serverNow ?? _nowInTashkent()).toUtc();
-    var count = 0;
+    DateTime? nearest;
+    String nearestSubject = '';
+
     for (final doc in docs) {
       final data = doc.data() as Map<String, dynamic>?;
       if (data == null) continue;
+      final subjectCode = (data['code'] as String?)?.trim();
+      final subject = (subjectCode != null && subjectCode.isNotEmpty)
+          ? subjectCode
+          : doc.id;
       final rawMaterials = data['materials'];
       if (rawMaterials is! List) continue;
 
@@ -3160,6 +3182,7 @@ class _MainScreenState extends State<MainScreen> {
         final item = rawItem.map(
           (key, value) => MapEntry(key.toString(), value),
         );
+
         final type = (item['type'] as String?)?.trim().toLowerCase() ?? '';
         if (type != 'homework') continue;
 
@@ -3167,42 +3190,206 @@ class _MainScreenState extends State<MainScreen> {
           item['deadline'] ?? item['dueDate'],
         );
         if (deadline == null) continue;
-        final diff = deadline.toUtc().difference(now);
-        if (!diff.isNegative && diff <= const Duration(hours: 24)) {
-          count += 1;
+
+        final deadlineUtc = deadline.toUtc();
+        if (deadlineUtc.isBefore(now)) continue;
+
+        if (nearest == null || deadlineUtc.isBefore(nearest)) {
+          nearest = deadlineUtc;
+          nearestSubject = subject;
         }
       }
     }
-    return count;
+
+    if (nearest == null) return null;
+    return (subject: nearestSubject, deadline: nearest);
   }
 
-  Widget _buildHomeStatusCard({
+  List<
+    ({
+      String subject,
+      String kind,
+      String title,
+      String description,
+      DateTime? dateTime,
+      DateTime? deadline,
+    })
+  >
+  _collectRecentUpdatesFromSubjectDocs(
+    List<QueryDocumentSnapshot> subjectDocs,
+  ) {
+    final updates =
+        <
+          ({
+            String subject,
+            String kind,
+            String title,
+            String description,
+            DateTime? dateTime,
+            DateTime? deadline,
+          })
+        >[];
+
+    for (final doc in subjectDocs) {
+      final data = doc.data() as Map<String, dynamic>?;
+      if (data == null) continue;
+
+      final subject = (data['code'] as String?)?.trim().isNotEmpty == true
+          ? (data['code'] as String).trim()
+          : doc.id;
+
+      final rawAnnouncements = data['announcements'];
+      if (rawAnnouncements is List) {
+        for (final rawItem in rawAnnouncements) {
+          if (rawItem is! Map) continue;
+          final item = rawItem.map(
+            (key, value) => MapEntry(key.toString(), value),
+          );
+
+          final title = (item['title'] as String?)?.trim().isNotEmpty == true
+              ? (item['title'] as String).trim()
+              : 'Announcement';
+          final description =
+              (item['content'] as String?)?.trim().isNotEmpty == true
+              ? (item['content'] as String).trim()
+              : ((item['description'] as String?)?.trim() ?? '');
+
+          final dateTime =
+              _updateDateFromValue(item) ?? _updateDateFromValue(data);
+          if (!_isAnnouncementNew(dateTime)) continue;
+
+          updates.add((
+            subject: subject,
+            kind: 'Announcement',
+            title: title,
+            description: description,
+            dateTime: dateTime,
+            deadline: _updateDateFromValue(item['deadline'] ?? item['dueDate']),
+          ));
+        }
+      }
+
+      final rawMaterials = data['materials'];
+      if (rawMaterials is! List) continue;
+
+      for (final rawItem in rawMaterials) {
+        if (rawItem is! Map) continue;
+        final item = rawItem.map(
+          (key, value) => MapEntry(key.toString(), value),
+        );
+
+        final title = (item['title'] as String?)?.trim().isNotEmpty == true
+            ? (item['title'] as String).trim()
+            : 'Material';
+        final materialType = (item['type'] as String?)?.trim().toLowerCase();
+        final kind = materialType == null || materialType.isEmpty
+            ? 'Material'
+            : materialType == 'homework'
+            ? 'Homework'
+            : materialType == 'lecture'
+            ? 'Lecture'
+            : 'Material';
+        final description = (item['url'] as String?)?.trim() ?? '';
+
+        final dateTime =
+            _updateDateFromValue(item) ?? _updateDateFromValue(data);
+        if (!_isAnnouncementNew(dateTime)) continue;
+
+        updates.add((
+          subject: subject,
+          kind: kind,
+          title: title,
+          description: description,
+          dateTime: dateTime,
+          deadline: _updateDateFromValue(item['deadline'] ?? item['dueDate']),
+        ));
+      }
+    }
+
+    updates.sort((a, b) {
+      if (a.dateTime == null && b.dateTime == null) return 0;
+      if (a.dateTime == null) return 1;
+      if (b.dateTime == null) return -1;
+      return b.dateTime!.compareTo(a.dateTime!);
+    });
+
+    return updates;
+  }
+
+  String _deadlineCountdownLabel(DateTime? deadline) {
+    if (deadline == null) return '';
+    final now = (_serverNow ?? _nowInTashkent()).toUtc();
+    final diff = deadline.toUtc().difference(now);
+    if (diff.isNegative) return 'Overdue';
+    if (diff.inHours < 24) return '${diff.inHours}h left';
+    if (diff.inDays == 1) return '1 day left';
+    return '${diff.inDays} days left';
+  }
+
+  Widget _buildHomeInsightCard({
     required String title,
-    required String value,
     required IconData icon,
+    required List<Widget> children,
     Color? accent,
   }) {
     final scheme = Theme.of(context).colorScheme;
     final tone = accent ?? scheme.primary;
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+      width: double.infinity,
+      padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
-        color: scheme.surfaceContainerHighest.withValues(alpha: 0.35),
-        borderRadius: BorderRadius.circular(14),
+        color: scheme.surfaceContainerHighest.withValues(alpha: 0.32),
+        borderRadius: BorderRadius.circular(20),
         border: Border.all(color: scheme.outlineVariant.withValues(alpha: 0.5)),
       ),
-      child: Row(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Icon(icon, size: 16, color: tone),
-          const SizedBox(width: 8),
+          Row(
+            children: [
+              Icon(icon, size: 18, color: tone),
+              const SizedBox(width: 8),
+              Text(
+                title,
+                style: TextStyle(
+                  fontWeight: FontWeight.w800,
+                  fontSize: 16,
+                  color: scheme.onSurface,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          ...children,
+        ],
+      ),
+    );
+  }
+
+  Widget _buildHomeInsightRow({
+    required IconData icon,
+    required String label,
+    required String value,
+    String? subtitle,
+    VoidCallback? onTap,
+    Color? iconColor,
+  }) {
+    final scheme = Theme.of(context).colorScheme;
+    final content = Padding(
+      padding: const EdgeInsets.symmetric(vertical: 6),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(icon, size: 18, color: iconColor ?? scheme.primary),
+          const SizedBox(width: 10),
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  title,
+                  label,
                   style: TextStyle(
-                    fontSize: 11,
+                    fontSize: 12,
                     fontWeight: FontWeight.w700,
                     color: scheme.onSurfaceVariant,
                   ),
@@ -3210,19 +3397,41 @@ class _MainScreenState extends State<MainScreen> {
                 const SizedBox(height: 2),
                 Text(
                   value,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
                   style: TextStyle(
-                    fontSize: 13,
+                    fontSize: 15,
                     fontWeight: FontWeight.w700,
                     color: scheme.onSurface,
                   ),
                 ),
+                if (subtitle != null && subtitle.trim().isNotEmpty) ...[
+                  const SizedBox(height: 2),
+                  Text(
+                    subtitle,
+                    style: TextStyle(
+                      fontSize: 12,
+                      color: scheme.onSurfaceVariant,
+                    ),
+                  ),
+                ],
               ],
             ),
           ),
+          if (onTap != null)
+            Icon(
+              Icons.chevron_right_rounded,
+              color: scheme.onSurfaceVariant,
+              size: 18,
+            ),
         ],
       ),
+    );
+
+    if (onTap == null) return content;
+
+    return InkWell(
+      borderRadius: BorderRadius.circular(12),
+      onTap: onTap,
+      child: content,
     );
   }
 
@@ -3669,61 +3878,6 @@ class _MainScreenState extends State<MainScreen> {
                               // Removed View All button
                             ],
                           ),
-                          const SizedBox(height: 12),
-                          Row(
-                            children: [
-                              Expanded(
-                                child: _buildHomeStatusCard(
-                                  title: 'Now',
-                                  value:
-                                      activeEntry?.subject ?? 'No active class',
-                                  icon: Icons.play_circle_rounded,
-                                  accent: Theme.of(
-                                    context,
-                                  ).colorScheme.tertiary,
-                                ),
-                              ),
-                              const SizedBox(width: 8),
-                              Expanded(
-                                child: _buildHomeStatusCard(
-                                  title: 'Upcoming',
-                                  value:
-                                      nearestUpcomingEntry?.subject ??
-                                      'No upcoming class',
-                                  icon: Icons.schedule_rounded,
-                                ),
-                              ),
-                              const SizedBox(width: 8),
-                              Expanded(
-                                child: StreamBuilder<QuerySnapshot>(
-                                  stream: FirebaseFirestore.instance
-                                      .collection('subjects')
-                                      .snapshots(),
-                                  builder: (context, urgentSnapshot) {
-                                    final docs =
-                                        urgentSnapshot.data?.docs ??
-                                        const <
-                                          QueryDocumentSnapshot<Object?>
-                                        >[];
-                                    final urgent =
-                                        _urgentDeadlinesCountFromSubjectDocs(
-                                          docs,
-                                        );
-                                    return _buildHomeStatusCard(
-                                      title: 'Urgent',
-                                      value: urgent == 0
-                                          ? 'No deadlines'
-                                          : '$urgent due in 24h',
-                                      icon: Icons.warning_amber_rounded,
-                                      accent: Theme.of(
-                                        context,
-                                      ).colorScheme.error,
-                                    );
-                                  },
-                                ),
-                              ),
-                            ],
-                          ),
                           const SizedBox(height: 16),
                           if (snapshot.hasError)
                             Container(
@@ -3800,26 +3954,15 @@ class _MainScreenState extends State<MainScreen> {
                                 isUpcoming,
                               );
                             }),
-                          const SizedBox(height: 32),
-                          Row(
-                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                            children: [
-                              Text(
-                                'Recent Updates',
-                                style: Theme.of(context).textTheme.titleLarge
-                                    ?.copyWith(fontWeight: FontWeight.bold),
-                              ),
-                            ],
-                          ),
-                          const SizedBox(height: 16),
+                          const SizedBox(height: 28),
                           StreamBuilder<QuerySnapshot>(
                             stream: FirebaseFirestore.instance
                                 .collection('subjects')
                                 .snapshots(),
-                            builder: (context, announcementSnapshot) {
-                              if (announcementSnapshot.connectionState ==
+                            builder: (context, homeInfoSnapshot) {
+                              if (homeInfoSnapshot.connectionState ==
                                       ConnectionState.waiting &&
-                                  !announcementSnapshot.hasData) {
+                                  !homeInfoSnapshot.hasData) {
                                 return const Padding(
                                   padding: EdgeInsets.symmetric(vertical: 12),
                                   child: Center(
@@ -3828,13 +3971,13 @@ class _MainScreenState extends State<MainScreen> {
                                 );
                               }
 
-                              if (announcementSnapshot.hasError) {
+                              if (homeInfoSnapshot.hasError) {
                                 return Padding(
                                   padding: const EdgeInsets.symmetric(
                                     vertical: 8,
                                   ),
                                   child: Text(
-                                    'Could not load updates',
+                                    'Could not load home insights',
                                     style: TextStyle(
                                       color: Theme.of(
                                         context,
@@ -3845,346 +3988,165 @@ class _MainScreenState extends State<MainScreen> {
                               }
 
                               final subjectDocs =
-                                  announcementSnapshot.data?.docs ??
+                                  homeInfoSnapshot.data?.docs ??
                                   const <QueryDocumentSnapshot<Object?>>[];
+                              final nearestDeadline =
+                                  _nearestHomeworkDeadlineFromSubjectDocs(
+                                    subjectDocs,
+                                  );
+                              final updates =
+                                  _collectRecentUpdatesFromSubjectDocs(
+                                    subjectDocs,
+                                  );
+                              final visibleUpdates = updates.take(5).toList();
 
-                              final rawUpdates =
-                                  <
-                                    ({
-                                      String subject,
-                                      String kind,
-                                      String title,
-                                      String description,
-                                      DateTime? dateTime,
-                                      DateTime? deadline,
-                                    })
-                                  >[];
-
-                              for (final doc in subjectDocs) {
-                                final data =
-                                    doc.data() as Map<String, dynamic>?;
-                                if (data == null) continue;
-
-                                final subject =
-                                    (data['code'] as String?)
-                                            ?.trim()
-                                            .isNotEmpty ==
-                                        true
-                                    ? (data['code'] as String).trim()
-                                    : doc.id;
-
-                                final rawAnnouncements = data['announcements'];
-
-                                if (rawAnnouncements is List) {
-                                  for (final rawItem in rawAnnouncements) {
-                                    if (rawItem is! Map) continue;
-                                    final item = rawItem.map(
-                                      (key, value) =>
-                                          MapEntry(key.toString(), value),
-                                    );
-
-                                    final title =
-                                        (item['title'] as String?)
-                                                ?.trim()
-                                                .isNotEmpty ==
-                                            true
-                                        ? (item['title'] as String).trim()
-                                        : 'Announcement';
-                                    final description =
-                                        (item['content'] as String?)
-                                                ?.trim()
-                                                .isNotEmpty ==
-                                            true
-                                        ? (item['content'] as String).trim()
-                                        : ((item['description'] as String?)
-                                                  ?.trim() ??
-                                              '');
-                                    final dateTime = _updateDateFromValue(item);
-
-                                    if (!_isAnnouncementNew(dateTime)) continue;
-
-                                    rawUpdates.add((
-                                      subject: subject,
-                                      kind: 'Announcement',
-                                      title: title,
-                                      description: description,
-                                      dateTime: dateTime,
-                                      deadline: _updateDateFromValue(
-                                        item['deadline'] ?? item['dueDate'],
+                              return Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  _buildHomeInsightCard(
+                                    title: 'What Awaits You',
+                                    icon: Icons.radar_rounded,
+                                    children: [
+                                      _buildHomeInsightRow(
+                                        icon: Icons.play_circle_rounded,
+                                        label: 'Now',
+                                        value:
+                                            activeEntry?.subject ??
+                                            'No active class',
+                                        subtitle: activeEntry == null
+                                            ? 'Take a short break or review notes'
+                                            : '${activeEntry.time} • ${activeEntry.room}',
+                                        iconColor: Theme.of(
+                                          context,
+                                        ).colorScheme.tertiary,
                                       ),
-                                    ));
-                                  }
-                                }
-
-                                final rawMaterials = data['materials'];
-                                if (rawMaterials is List) {
-                                  for (final rawItem in rawMaterials) {
-                                    if (rawItem is! Map) continue;
-                                    final item = rawItem.map(
-                                      (key, value) =>
-                                          MapEntry(key.toString(), value),
-                                    );
-
-                                    final title =
-                                        (item['title'] as String?)
-                                                ?.trim()
-                                                .isNotEmpty ==
-                                            true
-                                        ? (item['title'] as String).trim()
-                                        : 'Material';
-                                    final materialType =
-                                        (item['type'] as String?)
-                                            ?.trim()
-                                            .toLowerCase();
-                                    final kind =
-                                        materialType == null ||
-                                            materialType.isEmpty
-                                        ? 'Material'
-                                        : materialType == 'homework'
-                                        ? 'Homework'
-                                        : materialType == 'lecture'
-                                        ? 'Lecture'
-                                        : 'Material';
-                                    final description =
-                                        (item['url'] as String?)?.trim() ?? '';
-                                    final dateTime = _updateDateFromValue(item);
-
-                                    if (!_isAnnouncementNew(dateTime)) continue;
-
-                                    rawUpdates.add((
-                                      subject: subject,
-                                      kind: kind,
-                                      title: title,
-                                      description: description,
-                                      dateTime: dateTime,
-                                      deadline: _updateDateFromValue(
-                                        item['deadline'] ?? item['dueDate'],
+                                      Divider(
+                                        height: 12,
+                                        color: Theme.of(
+                                          context,
+                                        ).colorScheme.outlineVariant,
                                       ),
-                                    ));
-                                  }
-                                }
-                              }
-
-                              final subjectGroups =
-                                  <
-                                    String,
-                                    ({
-                                      String subject,
-                                      DateTime? latest,
-                                      List<
-                                        ({
-                                          String kind,
-                                          String title,
-                                          String description,
-                                          DateTime? dateTime,
-                                          DateTime? deadline,
-                                        })
-                                      >
-                                      items,
-                                    })
-                                  >{};
-
-                              for (final item in rawUpdates) {
-                                final key = item.subject.trim().toUpperCase();
-                                final current = subjectGroups[key];
-
-                                if (current == null) {
-                                  subjectGroups[key] = (
-                                    subject: item.subject.trim(),
-                                    latest: item.dateTime,
-                                    items: [
-                                      (
-                                        kind: item.kind,
-                                        title: item.title,
-                                        description: item.description,
-                                        dateTime: item.dateTime,
-                                        deadline: item.deadline,
+                                      _buildHomeInsightRow(
+                                        icon: Icons.schedule_rounded,
+                                        label: 'Upcoming',
+                                        value:
+                                            nearestUpcomingEntry?.subject ??
+                                            'No upcoming class',
+                                        subtitle: nearestUpcomingEntry == null
+                                            ? 'You are free for the rest of today'
+                                            : '${nearestUpcomingEntry.time} • ${nearestUpcomingEntry.room}',
+                                      ),
+                                      Divider(
+                                        height: 12,
+                                        color: Theme.of(
+                                          context,
+                                        ).colorScheme.outlineVariant,
+                                      ),
+                                      _buildHomeInsightRow(
+                                        icon: Icons.warning_amber_rounded,
+                                        label: 'Nearest deadline',
+                                        value: nearestDeadline == null
+                                            ? 'No active deadlines'
+                                            : '${nearestDeadline.subject} • ${_announcementDateLabel(nearestDeadline.deadline)}',
+                                        subtitle: nearestDeadline == null
+                                            ? 'No homework with future due date'
+                                            : _deadlineCountdownLabel(
+                                                nearestDeadline.deadline,
+                                              ),
+                                        iconColor: Theme.of(
+                                          context,
+                                        ).colorScheme.error,
                                       ),
                                     ],
-                                  );
-                                  continue;
-                                }
-
-                                final latest =
-                                    (current.latest == null ||
-                                        (item.dateTime != null &&
-                                            item.dateTime!.isAfter(
-                                              current.latest!,
-                                            )))
-                                    ? item.dateTime
-                                    : current.latest;
-
-                                current.items.add((
-                                  kind: item.kind,
-                                  title: item.title,
-                                  description: item.description,
-                                  dateTime: item.dateTime,
-                                  deadline: item.deadline,
-                                ));
-
-                                subjectGroups[key] = (
-                                  subject: current.subject,
-                                  latest: latest,
-                                  items: current.items,
-                                );
-                              }
-
-                              final groupedUpdates =
-                                  subjectGroups.values.toList()..sort((a, b) {
-                                    if (a.latest == null && b.latest == null) return 0;
-                                      
-
-                                    if (a.latest == null) return 1;
-                                    if (b.latest == null) return -1;
-                                    return b.latest!.compareTo(a.latest!);
-                                  });
-
-                              if (groupedUpdates.isEmpty) {
-                                return Padding(
-                                  padding: const EdgeInsets.symmetric(
-                                    vertical: 8,
                                   ),
-                                  child: Text(
-                                    'No new updates in the last 24 hours',
-                                    style: TextStyle(
-                                      color: Theme.of(
-                                        context,
-                                      ).colorScheme.onSurfaceVariant,
-                                    ),
-                                  ),
-                                );
-                              }
-
-                              final visibleGroups = groupedUpdates
-                                  .take(6)
-                                  .toList();
-                              return Column(
-                                children: visibleGroups.map((group) {
-                                  return Container(
-                                    margin: const EdgeInsets.only(bottom: 12),
-                                    decoration: BoxDecoration(
-                                      color: Theme.of(context)
-                                          .colorScheme
-                                          .surfaceContainerHighest
-                                          .withValues(alpha: 0.28),
-                                      borderRadius: BorderRadius.circular(18),
-                                      border: Border.all(
-                                        color: Theme.of(context)
-                                            .colorScheme
-                                            .outlineVariant
-                                            .withValues(alpha: 0.4),
-                                      ),
-                                    ),
-                                    padding: const EdgeInsets.all(12),
-                                    child: Column(
-                                      crossAxisAlignment:
-                                          CrossAxisAlignment.start,
-                                      children: [
-                                        Row(
-                                          children: [
-                                            Icon(
-                                              _subjectIcon(
-                                                group.subject,
-                                                group.subject,
-                                              ),
-                                              size: 16,
-                                              color: Theme.of(
-                                                context,
-                                              ).colorScheme.primary,
-                                            ),
-                                            const SizedBox(width: 6),
+                                  const SizedBox(height: 16),
+                                  _buildHomeInsightCard(
+                                    title: 'Latest Course Updates',
+                                    icon: Icons.campaign_rounded,
+                                    children: visibleUpdates.isEmpty
+                                        ? [
                                             Text(
-                                              group.subject,
+                                              'No new updates in the last 24 hours',
                                               style: TextStyle(
-                                                fontWeight: FontWeight.w800,
-                                                color: Theme.of(
-                                                  context,
-                                                ).colorScheme.primary,
-                                              ),
-                                            ),
-                                            const Spacer(),
-                                            Text(
-                                              _announcementDateLabel(
-                                                group.latest,
-                                              ),
-                                              style: TextStyle(
-                                                fontSize: 11,
                                                 color: Theme.of(
                                                   context,
                                                 ).colorScheme.onSurfaceVariant,
                                               ),
                                             ),
-                                          ],
-                                        ),
-                                        const SizedBox(height: 10),
-                                        Wrap(
-                                          spacing: 8,
-                                          runSpacing: 8,
-                                          children: group.items.map((entry) {
-                                            final actionVerb =
-                                                entry.kind == 'Announcement'
-                                                ? 'Read'
-                                                : 'Open';
-                                            final label =
-                                                '$actionVerb ${entry.kind.toLowerCase()}: ${entry.title}${entry.deadline == null ? '' : ' (till ${_announcementDateLabel(entry.deadline)})'}';
-                                            return ActionChip(
-                                              label: Text(
-                                                label,
-                                                overflow: TextOverflow.ellipsis,
-                                              ),
-                                              onPressed: () {
-                                                final opensLink =
-                                                    entry.kind !=
-                                                    'Announcement';
-                                                final maybeUri = Uri.tryParse(
-                                                  entry.description.trim(),
-                                                );
-                                                final hasLink =
-                                                    maybeUri != null &&
-                                                    (maybeUri.isScheme(
-                                                          'http',
-                                                        ) ||
-                                                        maybeUri.isScheme(
-                                                          'https',
-                                                        ));
-
-                                                if (opensLink && hasLink) {
-                                                  _confirmAndOpenUrl(
-                                                    entry.description,
-                                                    title:
-                                                        '[${group.subject}] ${entry.kind} link',
-                                                  );
-                                                  return;
-                                                }
-
-                                                _showAnnouncementDetails(
-                                                  '[${group.subject}] ${entry.kind}',
-                                                  entry.description.isEmpty
-                                                      ? '${entry.title}${entry.deadline == null ? '' : '\nDeadline: ${_announcementDateLabel(entry.deadline)}'}'
-                                                      : '${entry.title}${entry.deadline == null ? '' : '\nDeadline: ${_announcementDateLabel(entry.deadline)}'}\n\n${entry.description}',
-                                                  _announcementDateLabel(
-                                                    entry.dateTime,
-                                                  ),
-                                                );
-                                              },
-                                              avatar: Icon(
-                                                entry.kind == 'Homework'
+                                          ]
+                                        : [
+                                            for (
+                                              var i = 0;
+                                              i < visibleUpdates.length;
+                                              i += 1
+                                            ) ...[
+                                              _buildHomeInsightRow(
+                                                icon:
+                                                    visibleUpdates[i].kind ==
+                                                        'Homework'
                                                     ? Icons.assignment_rounded
-                                                    : entry.kind == 'Lecture'
+                                                    : visibleUpdates[i].kind ==
+                                                          'Lecture'
                                                     ? Icons.slideshow_rounded
-                                                    : entry.kind ==
+                                                    : visibleUpdates[i].kind ==
                                                           'Announcement'
                                                     ? Icons.campaign_rounded
                                                     : Icons.description_rounded,
-                                                size: 16,
+                                                label:
+                                                    '${visibleUpdates[i].subject} • ${visibleUpdates[i].kind}',
+                                                value: visibleUpdates[i].title,
+                                                subtitle:
+                                                    '${_announcementDateLabel(visibleUpdates[i].dateTime)}${visibleUpdates[i].deadline == null ? '' : ' • deadline ${_announcementDateLabel(visibleUpdates[i].deadline)}'}',
+                                                onTap: () {
+                                                  final entry =
+                                                      visibleUpdates[i];
+                                                  final opensLink =
+                                                      entry.kind !=
+                                                      'Announcement';
+                                                  final maybeUri = Uri.tryParse(
+                                                    entry.description.trim(),
+                                                  );
+                                                  final hasLink =
+                                                      maybeUri != null &&
+                                                      (maybeUri.isScheme(
+                                                            'http',
+                                                          ) ||
+                                                          maybeUri.isScheme(
+                                                            'https',
+                                                          ));
+
+                                                  if (opensLink && hasLink) {
+                                                    _confirmAndOpenUrl(
+                                                      entry.description,
+                                                      title:
+                                                          '[${entry.subject}] ${entry.kind} link',
+                                                    );
+                                                    return;
+                                                  }
+
+                                                  _showAnnouncementDetails(
+                                                    '[${entry.subject}] ${entry.kind}',
+                                                    entry.description.isEmpty
+                                                        ? '${entry.title}${entry.deadline == null ? '' : '\nDeadline: ${_announcementDateLabel(entry.deadline)}'}'
+                                                        : '${entry.title}${entry.deadline == null ? '' : '\nDeadline: ${_announcementDateLabel(entry.deadline)}'}\n\n${entry.description}',
+                                                    _announcementDateLabel(
+                                                      entry.dateTime,
+                                                    ),
+                                                  );
+                                                },
                                               ),
-                                            );
-                                          }).toList(),
-                                        ),
-                                      ],
-                                    ),
-                                  );
-                                }).toList(),
+                                              if (i !=
+                                                  visibleUpdates.length - 1)
+                                                Divider(
+                                                  height: 12,
+                                                  color: Theme.of(
+                                                    context,
+                                                  ).colorScheme.outlineVariant,
+                                                ),
+                                            ],
+                                          ],
+                                  ),
+                                ],
                               );
                             },
                           ),
