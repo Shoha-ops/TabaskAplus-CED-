@@ -1,6 +1,8 @@
-﻿import 'dart:async';
+import 'dart:async';
 
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:e_class/screens/messages/user_profile_screen.dart';
+import 'package:e_class/services/community_service.dart';
 import 'package:e_class/services/database_service.dart';
 import 'package:e_class/widgets/user_avatar.dart';
 import 'package:firebase_auth/firebase_auth.dart';
@@ -68,7 +70,8 @@ class _ReplyPreviewData {
       senderId: (data['replyToSenderId'] as String?)?.trim() ?? '',
       senderName: (data['replyToSenderName'] as String?)?.trim() ?? '',
       text: (data['replyToText'] as String?)?.trim() ?? '',
-      messageType: (data['replyToMessageType'] as String?)?.trim().isNotEmpty == true
+      messageType:
+          (data['replyToMessageType'] as String?)?.trim().isNotEmpty == true
           ? (data['replyToMessageType'] as String).trim()
           : 'text',
     );
@@ -77,12 +80,12 @@ class _ReplyPreviewData {
   bool get isValid => messageId.isNotEmpty && text.isNotEmpty;
 
   Map<String, dynamic> toMap() => {
-        'messageId': messageId,
-        'senderId': senderId,
-        'senderName': senderName,
-        'text': text,
-        'messageType': messageType,
-      };
+    'messageId': messageId,
+    'senderId': senderId,
+    'senderName': senderName,
+    'text': text,
+    'messageType': messageType,
+  };
 }
 
 class _PendingMessage {
@@ -104,9 +107,7 @@ class _PendingMessage {
   final _PendingMessageStatus status;
   final _ReplyPreviewData? replyPreview;
 
-  _PendingMessage copyWith({
-    _PendingMessageStatus? status,
-  }) {
+  _PendingMessage copyWith({_PendingMessageStatus? status}) {
     return _PendingMessage(
       clientMessageId: clientMessageId,
       senderId: senderId,
@@ -233,6 +234,7 @@ class ConversationScreen extends StatefulWidget {
     required this.recipientName,
     this.threadSubject,
     this.channel = 'mail',
+    this.isCommunity = false,
   });
 
   final String threadId;
@@ -240,6 +242,7 @@ class ConversationScreen extends StatefulWidget {
   final String recipientName;
   final String? threadSubject;
   final String channel;
+  final bool isCommunity;
 
   @override
   State<ConversationScreen> createState() => _ConversationScreenState();
@@ -317,6 +320,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
       _isDarkMode(context) ? const Color(0xFF17212B) : Colors.white;
 
   bool get _isOfficeHoursThread => widget.threadId == _officeHoursThreadId;
+  bool get _isCommunityThread => widget.isCommunity;
 
   DateTimeRange _windowForSlot(DateTime anchor, _OfficeHoursSlot slot) {
     return DateTimeRange(
@@ -388,7 +392,8 @@ class _ConversationScreenState extends State<ConversationScreen> {
         '${window.start.hour.toString().padLeft(2, '0')}:${window.start.minute.toString().padLeft(2, '0')}';
     final endLabel =
         '${window.end.hour.toString().padLeft(2, '0')}:${window.end.minute.toString().padLeft(2, '0')}';
-    final includeDay = !_isOfficeHoursOpen(now) || window.start.weekday != now.weekday;
+    final includeDay =
+        !_isOfficeHoursOpen(now) || window.start.weekday != now.weekday;
     if (!includeDay) {
       return '$startLabel-$endLabel';
     }
@@ -401,7 +406,9 @@ class _ConversationScreenState extends State<ConversationScreen> {
     _messageController.addListener(_handleComposerChanged);
     _searchController.addListener(_handleSearchChanged);
     if (_isOfficeHoursThread) {
-      _officeHoursRefreshTimer = Timer.periodic(const Duration(minutes: 1), (_) {
+      _officeHoursRefreshTimer = Timer.periodic(const Duration(minutes: 1), (
+        _,
+      ) {
         if (mounted) {
           setState(() {});
         }
@@ -447,6 +454,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
     return (data['createdAtClient'] as Timestamp?) ??
         (data['createdAt'] as Timestamp?);
   }
+
   Future<void> _markThreadAsRead(
     User user,
     List<QueryDocumentSnapshot> threadDocs,
@@ -496,7 +504,8 @@ class _ConversationScreenState extends State<ConversationScreen> {
   }
 
   void _scheduleScrollToBottom(int messageCount) {
-    final shouldAnimate = _initialScrollDone && messageCount > _lastMessageCount;
+    final shouldAnimate =
+        _initialScrollDone && messageCount > _lastMessageCount;
     _lastMessageCount = messageCount;
 
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -562,10 +571,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
     );
   }
 
-  Widget _buildHeaderAvatar(
-    Map<String, dynamic>? profile,
-    String displayName,
-  ) {
+  Widget _buildHeaderAvatar(Map<String, dynamic>? profile, String displayName) {
     return Container(
       padding: const EdgeInsets.all(2),
       decoration: BoxDecoration(
@@ -580,25 +586,28 @@ class _ConversationScreenState extends State<ConversationScreen> {
     QuerySnapshot snapshot,
     User user,
   ) {
-    return snapshot.docs.where((doc) {
-      final data = doc.data() as Map<String, dynamic>;
-      final threadId = (data['threadId'] as String?)?.trim();
-      final channel =
-          ((data['channel'] as String?)?.trim().isNotEmpty == true)
+    return snapshot.docs
+        .where((doc) {
+          final data = doc.data() as Map<String, dynamic>;
+          final threadId = (data['threadId'] as String?)?.trim();
+          final channel =
+              ((data['channel'] as String?)?.trim().isNotEmpty == true)
               ? (data['channel'] as String).trim()
               : 'mail';
-      if (channel != widget.channel) return false;
-      if (threadId != null && threadId.isNotEmpty) {
-        return threadId == widget.threadId;
-      }
+          if (channel != widget.channel) return false;
+          if (threadId != null && threadId.isNotEmpty) {
+            return threadId == widget.threadId;
+          }
 
-      final senderId = (data['senderId'] as String?)?.trim() ?? '';
-      final recipientId = (data['recipientId'] as String?)?.trim() ?? '';
-      if (senderId.isEmpty) return false;
-      final otherUserId = senderId == user.uid ? recipientId : senderId;
-      if (otherUserId.isEmpty) return false;
-      return _fallbackThreadId(user.uid, otherUserId) == widget.threadId;
-    }).cast<QueryDocumentSnapshot>().toList()
+          final senderId = (data['senderId'] as String?)?.trim() ?? '';
+          final recipientId = (data['recipientId'] as String?)?.trim() ?? '';
+          if (senderId.isEmpty) return false;
+          final otherUserId = senderId == user.uid ? recipientId : senderId;
+          if (otherUserId.isEmpty) return false;
+          return _fallbackThreadId(user.uid, otherUserId) == widget.threadId;
+        })
+        .cast<QueryDocumentSnapshot>()
+        .toList()
       ..sort((a, b) {
         final aTime = _effectiveTimestamp(a.data() as Map<String, dynamic>);
         final bTime = _effectiveTimestamp(b.data() as Map<String, dynamic>);
@@ -619,7 +628,8 @@ class _ConversationScreenState extends State<ConversationScreen> {
         .where((data) => (data['senderId'] as String?)?.trim() == currentUserId)
         .map((data) {
           final createdAtClient = data['createdAtClient'] as Timestamp?;
-          final clientMessageId = (data['clientMessageId'] as String?)?.trim() ?? '';
+          final clientMessageId =
+              (data['clientMessageId'] as String?)?.trim() ?? '';
           return (
             createdAtMs: createdAtClient?.millisecondsSinceEpoch ?? -1,
             clientMessageId: clientMessageId,
@@ -627,14 +637,17 @@ class _ConversationScreenState extends State<ConversationScreen> {
         })
         .toList(growable: false);
 
-    final nextPending = _pendingMessages.where((pending) {
-      return !remoteKeys.any(
-        (remote) =>
-            remote.createdAtMs == pending.createdAtClient.millisecondsSinceEpoch ||
-            (remote.clientMessageId.isNotEmpty &&
-                remote.clientMessageId == pending.clientMessageId),
-      );
-    }).toList(growable: false);
+    final nextPending = _pendingMessages
+        .where((pending) {
+          return !remoteKeys.any(
+            (remote) =>
+                remote.createdAtMs ==
+                    pending.createdAtClient.millisecondsSinceEpoch ||
+                (remote.clientMessageId.isNotEmpty &&
+                    remote.clientMessageId == pending.clientMessageId),
+          );
+        })
+        .toList(growable: false);
 
     if (nextPending.length != _pendingMessages.length && mounted) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -663,14 +676,16 @@ class _ConversationScreenState extends State<ConversationScreen> {
 
   List<_ChatMessageItem> _filterItems(List<_ChatMessageItem> items) {
     if (_searchQuery.isEmpty) return items;
-    return items.where((item) {
-      final haystack = [
-        item.message,
-        item.senderName,
-        item.replyPreview?.text ?? '',
-      ].join(' ').toLowerCase();
-      return haystack.contains(_searchQuery);
-    }).toList(growable: false);
+    return items
+        .where((item) {
+          final haystack = [
+            item.message,
+            item.senderName,
+            item.replyPreview?.text ?? '',
+          ].join(' ').toLowerCase();
+          return haystack.contains(_searchQuery);
+        })
+        .toList(growable: false);
   }
 
   bool _isSameDay(DateTime a, DateTime b) {
@@ -710,7 +725,9 @@ class _ConversationScreenState extends State<ConversationScreen> {
         senderName: teacherName,
         message: 'Please drop your questions here during the session.',
         createdAt: start.add(const Duration(minutes: 2)).toLocal(),
-        createdAtClient: Timestamp.fromDate(start.add(const Duration(minutes: 2))),
+        createdAtClient: Timestamp.fromDate(
+          start.add(const Duration(minutes: 2)),
+        ),
         isMine: false,
         isEdited: false,
         isReadByRecipient: true,
@@ -723,6 +740,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
     combined.sort((a, b) => a.createdAt.compareTo(b.createdAt));
     return combined;
   }
+
   void _setReplyTarget(_ChatMessageItem item) {
     setState(() {
       _editingMessageId = null;
@@ -815,6 +833,58 @@ class _ConversationScreenState extends State<ConversationScreen> {
     setState(() => _sending = true);
 
     try {
+      if (_isCommunityThread) {
+        if (_editingMessageId != null) {
+          await CommunityService(user: user).updateCommunityMessage(
+            communityId: widget.recipientId,
+            messageId: _editingMessageId!,
+            newText: text,
+          );
+          _stopEditing();
+        } else {
+          final createdAtClient = Timestamp.now();
+          final clientMessageId =
+              'community_${user.uid}_${createdAtClient.millisecondsSinceEpoch}';
+          final pending = _PendingMessage(
+            clientMessageId: clientMessageId,
+            senderId: user.uid,
+            senderName: user.displayName?.trim().isNotEmpty == true
+                ? user.displayName!.trim()
+                : 'You',
+            message: text,
+            createdAtClient: createdAtClient,
+            status: _PendingMessageStatus.sending,
+            replyPreview: _replyTarget,
+          );
+
+          setState(() {
+            _pendingMessages = [..._pendingMessages, pending];
+            _messageController.clear();
+            _replyTarget = null;
+          });
+
+          await CommunityService(user: user).sendCommunityMessage(
+            communityId: widget.recipientId,
+            message: text,
+            createdAtClient: createdAtClient,
+            clientMessageId: clientMessageId,
+            replyPreview: pending.replyPreview?.toMap(),
+          );
+
+          if (!mounted) return;
+          setState(() {
+            _pendingMessages = _pendingMessages
+                .map(
+                  (item) => item.clientMessageId == clientMessageId
+                      ? item.copyWith(status: _PendingMessageStatus.sent)
+                      : item,
+                )
+                .toList(growable: false);
+          });
+        }
+        return;
+      }
+
       if (_editingMessageId != null && _editingCreatedAtClient != null) {
         await DatabaseService(user: user).updateEmailMessage(
           messageId: _editingMessageId!,
@@ -848,8 +918,8 @@ class _ConversationScreenState extends State<ConversationScreen> {
         final subject = widget.channel == 'chat'
             ? ''
             : (widget.threadSubject ?? '').trim().isNotEmpty
-                ? widget.threadSubject!.trim()
-                : 'Conversation';
+            ? widget.threadSubject!.trim()
+            : 'Conversation';
 
         await DatabaseService(user: user).sendEmail(
           recipientUid: widget.recipientId,
@@ -896,6 +966,15 @@ class _ConversationScreenState extends State<ConversationScreen> {
   Future<void> _toggleReaction(_ChatMessageItem item, String emoji) async {
     final user = Provider.of<User?>(context, listen: false);
     if (user == null || item.documentId == null) return;
+
+    if (_isCommunityThread) {
+      await CommunityService(user: user).toggleCommunityReaction(
+        communityId: widget.recipientId,
+        messageId: item.documentId!,
+        emoji: emoji,
+      );
+      return;
+    }
 
     await DatabaseService(user: user).toggleMessageReaction(
       messageId: item.documentId!,
@@ -978,8 +1057,8 @@ class _ConversationScreenState extends State<ConversationScreen> {
     final accent = item.isMine
         ? (_isDarkMode(context) ? const Color(0xFF7BD6FF) : _telegramBlueDark)
         : (_isDarkMode(context)
-            ? const Color(0xFF8FB4D8)
-            : const Color(0xFF5A6C7D));
+              ? const Color(0xFF8FB4D8)
+              : const Color(0xFF5A6C7D));
 
     final entries = item.reactions.entries.toList()
       ..sort((a, b) => b.value.length.compareTo(a.value.length));
@@ -994,46 +1073,52 @@ class _ConversationScreenState extends State<ConversationScreen> {
         spacing: 6,
         runSpacing: 6,
         alignment: item.isMine ? WrapAlignment.end : WrapAlignment.start,
-        children: entries.map((entry) {
-          final reacted = user != null && entry.value.contains(user.uid);
-          return GestureDetector(
-            onTap: () => _toggleReaction(item, entry.key),
-            child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
-              decoration: BoxDecoration(
-                color: reacted
-                    ? accent.withValues(alpha: 0.18)
-                    : Colors.white.withValues(
-                        alpha: _isDarkMode(context) ? 0.08 : 0.76,
-                      ),
-                borderRadius: BorderRadius.circular(999),
-                border: Border.all(
-                  color: reacted
-                      ? accent.withValues(alpha: 0.35)
-                      : Colors.black.withValues(alpha: 0.05),
-                ),
-              ),
-              child: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Text(entry.key, style: const TextStyle(fontSize: 13)),
-                  const SizedBox(width: 4),
-                  Text(
-                    '${entry.value.length}',
-                    style: TextStyle(
-                      fontSize: 12,
-                      fontWeight: FontWeight.w700,
-                      color: reacted ? accent : _mutedTextColor(context),
+        children: entries
+            .map((entry) {
+              final reacted = user != null && entry.value.contains(user.uid);
+              return GestureDetector(
+                onTap: () => _toggleReaction(item, entry.key),
+                child: Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 8,
+                    vertical: 5,
+                  ),
+                  decoration: BoxDecoration(
+                    color: reacted
+                        ? accent.withValues(alpha: 0.18)
+                        : Colors.white.withValues(
+                            alpha: _isDarkMode(context) ? 0.08 : 0.76,
+                          ),
+                    borderRadius: BorderRadius.circular(999),
+                    border: Border.all(
+                      color: reacted
+                          ? accent.withValues(alpha: 0.35)
+                          : Colors.black.withValues(alpha: 0.05),
                     ),
                   ),
-                ],
-              ),
-            ),
-          );
-        }).toList(growable: false),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text(entry.key, style: const TextStyle(fontSize: 13)),
+                      const SizedBox(width: 4),
+                      Text(
+                        '${entry.value.length}',
+                        style: TextStyle(
+                          fontSize: 12,
+                          fontWeight: FontWeight.w700,
+                          color: reacted ? accent : _mutedTextColor(context),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              );
+            })
+            .toList(growable: false),
       ),
     );
   }
+
   IconData _statusIconForItem(_ChatMessageItem item) {
     if (item.pendingStatus == _PendingMessageStatus.sending) {
       return Icons.schedule_rounded;
@@ -1094,8 +1179,9 @@ class _ConversationScreenState extends State<ConversationScreen> {
         bottom: item.reactions.isEmpty ? (joinsNext ? 1 : 6) : 2,
       ),
       child: Column(
-        crossAxisAlignment:
-            item.isMine ? CrossAxisAlignment.end : CrossAxisAlignment.start,
+        crossAxisAlignment: item.isMine
+            ? CrossAxisAlignment.end
+            : CrossAxisAlignment.start,
         children: [
           Stack(
             clipBehavior: Clip.none,
@@ -1143,19 +1229,13 @@ class _ConversationScreenState extends State<ConversationScreen> {
                           if (item.isEdited) ...[
                             Text(
                               'edited',
-                              style: TextStyle(
-                                fontSize: 10,
-                                color: muted,
-                              ),
+                              style: TextStyle(fontSize: 10, color: muted),
                             ),
                             const SizedBox(width: 4),
                           ],
                           Text(
                             _formatTime(item.createdAt),
-                            style: TextStyle(
-                              fontSize: 10,
-                              color: muted,
-                            ),
+                            style: TextStyle(fontSize: 10, color: muted),
                           ),
                           if (item.isMine) ...[
                             const SizedBox(width: 4),
@@ -1222,32 +1302,41 @@ class _ConversationScreenState extends State<ConversationScreen> {
                 padding: const EdgeInsets.fromLTRB(16, 4, 16, 12),
                 child: Row(
                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  children: reactions.map((emoji) {
-                    final reacted = user != null &&
-                        (item.reactions[emoji]?.contains(user.uid) ?? false);
-                    return GestureDetector(
-                      onTap: () async {
-                        Navigator.pop(context);
-                        await _toggleReaction(item, emoji);
-                      },
-                      child: AnimatedContainer(
-                        duration: const Duration(milliseconds: 180),
-                        width: 46,
-                        height: 46,
-                        alignment: Alignment.center,
-                        decoration: BoxDecoration(
-                          color: reacted
-                              ? _chatHeaderColor(context).withValues(alpha: 0.16)
-                              : Theme.of(context)
-                                  .colorScheme
-                                  .surfaceContainerHighest
-                                  .withValues(alpha: 0.4),
-                          borderRadius: BorderRadius.circular(16),
-                        ),
-                        child: Text(emoji, style: const TextStyle(fontSize: 22)),
-                      ),
-                    );
-                  }).toList(growable: false),
+                  children: reactions
+                      .map((emoji) {
+                        final reacted =
+                            user != null &&
+                            (item.reactions[emoji]?.contains(user.uid) ??
+                                false);
+                        return GestureDetector(
+                          onTap: () async {
+                            Navigator.pop(context);
+                            await _toggleReaction(item, emoji);
+                          },
+                          child: AnimatedContainer(
+                            duration: const Duration(milliseconds: 180),
+                            width: 46,
+                            height: 46,
+                            alignment: Alignment.center,
+                            decoration: BoxDecoration(
+                              color: reacted
+                                  ? _chatHeaderColor(
+                                      context,
+                                    ).withValues(alpha: 0.16)
+                                  : Theme.of(context)
+                                        .colorScheme
+                                        .surfaceContainerHighest
+                                        .withValues(alpha: 0.4),
+                              borderRadius: BorderRadius.circular(16),
+                            ),
+                            child: Text(
+                              emoji,
+                              style: const TextStyle(fontSize: 22),
+                            ),
+                          ),
+                        );
+                      })
+                      .toList(growable: false),
                 ),
               ),
               ListTile(
@@ -1277,7 +1366,10 @@ class _ConversationScreenState extends State<ConversationScreen> {
                 ),
               if (item.isMine && !item.isPending)
                 ListTile(
-                  leading: const Icon(Icons.delete_outline_rounded, color: Colors.red),
+                  leading: const Icon(
+                    Icons.delete_outline_rounded,
+                    color: Colors.red,
+                  ),
                   title: const Text(
                     'Unsend',
                     style: TextStyle(color: Colors.red),
@@ -1285,11 +1377,18 @@ class _ConversationScreenState extends State<ConversationScreen> {
                   onTap: () async {
                     Navigator.pop(context);
                     if (user == null || item.documentId == null) return;
-                    await DatabaseService(user: user).deleteEmailMessage(
-                      messageId: item.documentId!,
-                      recipientId: widget.recipientId,
-                      createdAtClient: item.createdAtClient,
-                    );
+                    if (_isCommunityThread) {
+                      await CommunityService(user: user).deleteCommunityMessage(
+                        communityId: widget.recipientId,
+                        messageId: item.documentId!,
+                      );
+                    } else {
+                      await DatabaseService(user: user).deleteEmailMessage(
+                        messageId: item.documentId!,
+                        recipientId: widget.recipientId,
+                        createdAtClient: item.createdAtClient,
+                      );
+                    }
                   },
                 ),
               const SizedBox(height: 8),
@@ -1299,6 +1398,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
       },
     );
   }
+
   Widget _buildComposer() {
     final composerColor = _composerColor(context);
     final muted = _mutedTextColor(context);
@@ -1317,7 +1417,10 @@ class _ConversationScreenState extends State<ConversationScreen> {
             if (isOffice)
               Container(
                 width: double.infinity,
-                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 12,
+                  vertical: 8,
+                ),
                 margin: const EdgeInsets.only(bottom: 6),
                 decoration: BoxDecoration(
                   color: composerColor,
@@ -1386,10 +1489,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
                                 : _replyTarget!.text,
                             maxLines: 1,
                             overflow: TextOverflow.ellipsis,
-                            style: TextStyle(
-                              color: muted,
-                              fontSize: 12,
-                            ),
+                            style: TextStyle(color: muted, fontSize: 12),
                           ),
                         ],
                       ),
@@ -1440,9 +1540,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
                             textCapitalization: TextCapitalization.sentences,
                             enabled: isOpen,
                             decoration: InputDecoration(
-                              hintText: isOpen
-                                  ? 'Message'
-                                  : 'Chat is closed',
+                              hintText: isOpen ? 'Message' : 'Chat is closed',
                               hintStyle: TextStyle(color: muted),
                               border: InputBorder.none,
                               contentPadding: const EdgeInsets.symmetric(
@@ -1536,9 +1634,14 @@ class _ConversationScreenState extends State<ConversationScreen> {
               title: const Text('View profile'),
               onTap: () {
                 Navigator.pop(context);
-                UserAvatar.showViewer(
-                  context,
-                  displayName: widget.recipientName,
+                if (_isCommunityThread || _isOfficeHoursThread) return;
+                Navigator.of(context).push(
+                  MaterialPageRoute(
+                    builder: (context) => UserProfileScreen(
+                      userId: widget.recipientId,
+                      fallbackName: widget.recipientName,
+                    ),
+                  ),
                 );
               },
             ),
@@ -1574,11 +1677,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
           child: Column(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              Icon(
-                Icons.chat_bubble_outline_rounded,
-                color: muted,
-                size: 44,
-              ),
+              Icon(Icons.chat_bubble_outline_rounded, color: muted, size: 44),
               const SizedBox(height: 12),
               Text(
                 'Office hours chat',
@@ -1608,8 +1707,8 @@ class _ConversationScreenState extends State<ConversationScreen> {
         final item = items[index];
         final previous = index > 0 ? items[index - 1] : null;
         final next = index < items.length - 1 ? items[index + 1] : null;
-        final showDayDivider = previous == null ||
-            !_isSameDay(previous.createdAt, item.createdAt);
+        final showDayDivider =
+            previous == null || !_isSameDay(previous.createdAt, item.createdAt);
 
         return Column(
           children: [
@@ -1668,14 +1767,14 @@ class _ConversationScreenState extends State<ConversationScreen> {
           onPressed: () => Navigator.pop(context),
         ),
         title: StreamBuilder<DocumentSnapshot>(
-          stream: _isOfficeHoursThread
+          stream: _isOfficeHoursThread || _isCommunityThread
               ? const Stream.empty()
               : (widget.recipientId.isNotEmpty
-                  ? FirebaseFirestore.instance
-                      .collection('users')
-                      .doc(widget.recipientId)
-                      .snapshots()
-                  : const Stream.empty()),
+                    ? FirebaseFirestore.instance
+                          .collection('users')
+                          .doc(widget.recipientId)
+                          .snapshots()
+                    : const Stream.empty()),
           builder: (context, snapshot) {
             if (_isOfficeHoursThread) {
               final now = DateTime.now();
@@ -1720,6 +1819,75 @@ class _ConversationScreenState extends State<ConversationScreen> {
                 ],
               );
             }
+            if (_isCommunityThread) {
+              if (_isSearching) {
+                return TextField(
+                  controller: _searchController,
+                  autofocus: true,
+                  style: const TextStyle(color: Colors.white, fontSize: 16),
+                  decoration: const InputDecoration(
+                    hintText: 'Search messages',
+                    hintStyle: TextStyle(color: Colors.white70),
+                    border: InputBorder.none,
+                  ),
+                );
+              }
+              return StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
+                stream: CommunityService(
+                  user: user,
+                ).communityStream(widget.recipientId),
+                builder: (context, communitySnapshot) {
+                  final community = communitySnapshot.data?.data();
+                  final topic =
+                      (community?['topic'] as String?)?.trim().isNotEmpty ==
+                          true
+                      ? (community!['topic'] as String).trim()
+                      : ((widget.threadSubject ?? '').trim().isNotEmpty
+                            ? widget.threadSubject!.trim()
+                            : 'Community');
+                  final members = (community?['memberCount'] as num?)?.toInt();
+                  return Row(
+                    children: [
+                      CircleAvatar(
+                        backgroundColor: Colors.white.withValues(alpha: 0.2),
+                        child: const Icon(
+                          Icons.groups_rounded,
+                          color: Colors.white,
+                        ),
+                      ),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              widget.recipientName,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(
+                                fontSize: 16,
+                                fontWeight: FontWeight.w700,
+                              ),
+                            ),
+                            Text(
+                              members != null
+                                  ? '$topic • $members members'
+                                  : topic,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(
+                                fontSize: 12,
+                                color: Colors.white70,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  );
+                },
+              );
+            }
             final profile = snapshot.data?.data() as Map<String, dynamic>?;
             if (_isSearching) {
               return TextField(
@@ -1734,12 +1902,13 @@ class _ConversationScreenState extends State<ConversationScreen> {
               );
             }
             return GestureDetector(
-              onTap: () => UserAvatar.showViewer(
-                context,
-                avatarId: (profile?['avatarId'] as String?)?.trim(),
-                profilePicBase64: (profile?['profilePicBase64'] as String?)?.trim(),
-                profilePicUrl: (profile?['profilePicUrl'] as String?)?.trim(),
-                displayName: widget.recipientName,
+              onTap: () => Navigator.of(context).push(
+                MaterialPageRoute(
+                  builder: (context) => UserProfileScreen(
+                    userId: widget.recipientId,
+                    fallbackName: widget.recipientName,
+                  ),
+                ),
               ),
               child: Row(
                 children: [
@@ -1775,9 +1944,11 @@ class _ConversationScreenState extends State<ConversationScreen> {
                               child: Text(
                                 widget.channel == 'chat'
                                     ? 'online'
-                                    : ((widget.threadSubject ?? '').trim().isNotEmpty
-                                        ? widget.threadSubject!.trim()
-                                        : 'Course mail'),
+                                    : ((widget.threadSubject ?? '')
+                                              .trim()
+                                              .isNotEmpty
+                                          ? widget.threadSubject!.trim()
+                                          : 'Course mail'),
                                 maxLines: 1,
                                 overflow: TextOverflow.ellipsis,
                                 style: const TextStyle(
@@ -1817,7 +1988,9 @@ class _ConversationScreenState extends State<ConversationScreen> {
                   child: DecoratedBox(
                     decoration: BoxDecoration(color: canvas),
                     child: CustomPaint(
-                      painter: _ChatBackdropPainter(isDark: _isDarkMode(context)),
+                      painter: _ChatBackdropPainter(
+                        isDark: _isDarkMode(context),
+                      ),
                     ),
                   ),
                 ),
@@ -1827,7 +2000,11 @@ class _ConversationScreenState extends State<ConversationScreen> {
                       child: _isOfficeHoursThread
                           ? _buildOfficeHoursList(user)
                           : StreamBuilder<QuerySnapshot>(
-                              stream: DatabaseService(user: user).emailMessages,
+                              stream: _isCommunityThread
+                                  ? CommunityService(
+                                      user: user,
+                                    ).communityMessages(widget.recipientId)
+                                  : DatabaseService(user: user).emailMessages,
                               builder: (context, snapshot) {
                                 if (!snapshot.hasData) {
                                   return const Center(
@@ -1835,9 +2012,19 @@ class _ConversationScreenState extends State<ConversationScreen> {
                                   );
                                 }
 
-                                final threadDocs =
-                                    _threadDocsForSnapshot(snapshot.data!, user);
-                                unawaited(_markThreadAsRead(user, threadDocs));
+                                final threadDocs = _isCommunityThread
+                                    ? snapshot.data!.docs
+                                          .cast<QueryDocumentSnapshot>()
+                                          .toList(growable: false)
+                                    : _threadDocsForSnapshot(
+                                        snapshot.data!,
+                                        user,
+                                      );
+                                if (!_isCommunityThread) {
+                                  unawaited(
+                                    _markThreadAsRead(user, threadDocs),
+                                  );
+                                }
                                 _reconcilePendingMessages(threadDocs, user.uid);
                                 final items = _filterItems(
                                   _buildItems(threadDocs, user.uid),
@@ -1851,7 +2038,8 @@ class _ConversationScreenState extends State<ConversationScreen> {
                                         horizontal: 28,
                                       ),
                                       child: Column(
-                                        mainAxisAlignment: MainAxisAlignment.center,
+                                        mainAxisAlignment:
+                                            MainAxisAlignment.center,
                                         children: [
                                           Icon(
                                             Icons.chat_bubble_outline_rounded,
@@ -1860,16 +2048,22 @@ class _ConversationScreenState extends State<ConversationScreen> {
                                           ),
                                           const SizedBox(height: 12),
                                           Text(
-                                            'Start the conversation',
+                                            _isCommunityThread
+                                                ? 'Say hi to the community'
+                                                : 'Start the conversation',
                                             style: TextStyle(
-                                              color: _incomingTextColor(context),
+                                              color: _incomingTextColor(
+                                                context,
+                                              ),
                                               fontSize: 18,
                                               fontWeight: FontWeight.w800,
                                             ),
                                           ),
                                           const SizedBox(height: 8),
                                           Text(
-                                            'Messages sent here will appear in real time.',
+                                            _isCommunityThread
+                                                ? 'Joined communities appear here so students with similar interests can chat in real time.'
+                                                : 'Messages sent here will appear in real time.',
                                             textAlign: TextAlign.center,
                                             style: TextStyle(color: muted),
                                           ),
@@ -1881,18 +2075,27 @@ class _ConversationScreenState extends State<ConversationScreen> {
 
                                 return ListView.builder(
                                   controller: _scrollController,
-                                  padding:
-                                      const EdgeInsets.fromLTRB(8, 8, 8, 14),
+                                  padding: const EdgeInsets.fromLTRB(
+                                    8,
+                                    8,
+                                    8,
+                                    14,
+                                  ),
                                   itemCount: items.length,
                                   itemBuilder: (context, index) {
                                     final item = items[index];
-                                    final previous =
-                                        index > 0 ? items[index - 1] : null;
+                                    final previous = index > 0
+                                        ? items[index - 1]
+                                        : null;
                                     final next = index < items.length - 1
                                         ? items[index + 1]
                                         : null;
-                                    final showDayDivider = previous == null ||
-                                        !_isSameDay(previous.createdAt, item.createdAt);
+                                    final showDayDivider =
+                                        previous == null ||
+                                        !_isSameDay(
+                                          previous.createdAt,
+                                          item.createdAt,
+                                        );
 
                                     return Column(
                                       children: [
@@ -1902,10 +2105,11 @@ class _ConversationScreenState extends State<ConversationScreen> {
                                               vertical: 10,
                                             ),
                                             child: Container(
-                                              padding: const EdgeInsets.symmetric(
-                                                horizontal: 12,
-                                                vertical: 6,
-                                              ),
+                                              padding:
+                                                  const EdgeInsets.symmetric(
+                                                    horizontal: 12,
+                                                    vertical: 6,
+                                                  ),
                                               decoration: BoxDecoration(
                                                 color: _isDarkMode(context)
                                                     ? Colors.black.withValues(
@@ -1918,7 +2122,9 @@ class _ConversationScreenState extends State<ConversationScreen> {
                                                     BorderRadius.circular(999),
                                               ),
                                               child: Text(
-                                                _formatDayDivider(item.createdAt),
+                                                _formatDayDivider(
+                                                  item.createdAt,
+                                                ),
                                                 style: TextStyle(
                                                   fontSize: 12,
                                                   fontWeight: FontWeight.w700,
@@ -1930,8 +2136,10 @@ class _ConversationScreenState extends State<ConversationScreen> {
                                         _buildMessageBubble(
                                           item,
                                           user,
-                                          joinsPrevious:
-                                              _isSameSender(previous, item),
+                                          joinsPrevious: _isSameSender(
+                                            previous,
+                                            item,
+                                          ),
                                           joinsNext: _isSameSender(item, next),
                                         ),
                                       ],
@@ -2005,26 +2213,18 @@ class _SwipeReplyWrapperState extends State<_SwipeReplyWrapper> {
             right: widget.isMine ? 4 : null,
             child: Opacity(
               opacity: (_offset / 40).clamp(0, 1),
-              child: Icon(
-                Icons.reply_rounded,
-                color: widget.accentColor,
-              ),
+              child: Icon(Icons.reply_rounded, color: widget.accentColor),
             ),
           ),
-          Transform.translate(
-            offset: Offset(_offset, 0),
-            child: widget.child,
-          ),
+          Transform.translate(offset: Offset(_offset, 0), child: widget.child),
         ],
       ),
     );
   }
 }
+
 class _BubbleTailPainter extends CustomPainter {
-  const _BubbleTailPainter({
-    required this.color,
-    required this.isMine,
-  });
+  const _BubbleTailPainter({required this.color, required this.isMine});
 
   final Color color;
   final bool isMine;
@@ -2045,12 +2245,7 @@ class _BubbleTailPainter extends CustomPainter {
       path.lineTo(size.width, size.height);
     } else {
       path.moveTo(size.width, size.height);
-      path.quadraticBezierTo(
-        size.width * 0.6,
-        size.height * 0.86,
-        0,
-        0,
-      );
+      path.quadraticBezierTo(size.width * 0.6, size.height * 0.86, 0, 0);
       path.lineTo(0, size.height);
     }
 

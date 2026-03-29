@@ -97,6 +97,42 @@ class _SecurityScreenState extends State<SecurityScreen> {
     });
   }
 
+  Future<void> _resetPin() async {
+    if (!_pinEnabled) return;
+
+    final verified = await Navigator.push<bool>(
+      context,
+      MaterialPageRoute(
+        builder: (context) => LockScreen(
+          onAuthenticated: () {
+            Navigator.pop(context, true);
+          },
+        ),
+      ),
+    );
+
+    if (verified != true || !mounted) return;
+
+    final reset = await Navigator.push<bool>(
+      context,
+      MaterialPageRoute(
+        builder: (context) => LockScreen(
+          onAuthenticated: () {
+            Navigator.pop(context, true);
+          },
+          isSettingPin: true,
+        ),
+      ),
+    );
+
+    if (reset == true && mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('PIN code updated successfully')),
+      );
+      await _loadSettings();
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -109,6 +145,14 @@ class _SecurityScreenState extends State<SecurityScreen> {
             value: _pinEnabled,
             onChanged: _togglePin,
           ),
+          if (_pinEnabled)
+            ListTile(
+              leading: const Icon(Icons.lock_reset_rounded),
+              title: const Text('Reset PIN Code'),
+              subtitle: const Text('Verify current PIN and choose a new one'),
+              trailing: const Icon(Icons.chevron_right),
+              onTap: _resetPin,
+            ),
           if (_canCheckBiometrics)
             SwitchListTile(
               title: const Text('Biometrics'),
