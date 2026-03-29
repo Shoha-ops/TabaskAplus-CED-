@@ -196,6 +196,14 @@ class DatabaseService {
     final senderData = senderSnapshot.data() as Map<String, dynamic>?;
     final recipientSnapshot = await users.doc(recipientUid).get();
     final recipientData = recipientSnapshot.data() as Map<String, dynamic>?;
+    Map<String, dynamic>? recipientStaffData;
+    if (recipientData == null) {
+      final recipientStaffSnapshot = await _db
+          .collection('staff')
+          .doc(recipientUid)
+          .get();
+      recipientStaffData = recipientStaffSnapshot.data();
+    }
     final senderName =
         (senderData?['fullName'] as String?)?.trim().isNotEmpty == true
         ? (senderData!['fullName'] as String).trim()
@@ -205,7 +213,11 @@ class DatabaseService {
         (recipientData?['fullName'] as String?)?.trim().isNotEmpty == true
         ? (recipientData!['fullName'] as String).trim()
         : '${(recipientData?['firstName'] as String?)?.trim() ?? ''} ${(recipientData?['lastName'] as String?)?.trim() ?? ''}'
-              .trim();
+              .trim()
+              .isNotEmpty
+        ? '${(recipientData?['firstName'] as String?)?.trim() ?? ''} ${(recipientData?['lastName'] as String?)?.trim() ?? ''}'
+              .trim()
+        : ((recipientStaffData?['name'] as String?)?.trim() ?? '');
     final threadId = _buildThreadId(user!.uid, recipientUid);
     final effectiveCreatedAtClient = createdAtClient ?? Timestamp.now();
     final createdAt = FieldValue.serverTimestamp();
@@ -253,7 +265,9 @@ class DatabaseService {
       'recipientName': recipientName,
       'otherUserId': recipientUid,
       'otherUserName': recipientName.isEmpty
-          ? ((recipientData?['email'] as String?) ?? recipientUid)
+          ? ((recipientData?['email'] as String?) ??
+                (recipientStaffData?['name'] as String?) ??
+                recipientUid)
           : recipientName,
       'subject': subject,
       'message': message,
@@ -301,7 +315,8 @@ class DatabaseService {
     report('Loading your profile');
     final userSnapshot = await userRef.get();
     final userData = userSnapshot.data() as Map<String, dynamic>?;
-    final groupName = (userData?['group'] as String?)?.trim().toUpperCase() ?? '';
+    final groupName =
+        (userData?['group'] as String?)?.trim().toUpperCase() ?? '';
 
     final tasks = <Future<void>>[
       (() async {
@@ -408,7 +423,9 @@ class DatabaseService {
         }
       }
 
-      final usersForEmoji = List<String>.from(reactions[emoji] ?? const <String>[]);
+      final usersForEmoji = List<String>.from(
+        reactions[emoji] ?? const <String>[],
+      );
       if (usersForEmoji.contains(user!.uid)) {
         usersForEmoji.removeWhere((id) => id == user!.uid);
       } else {

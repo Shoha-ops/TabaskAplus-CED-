@@ -1,4 +1,4 @@
-﻿import 'dart:async';
+import 'dart:async';
 import 'dart:convert';
 import 'dart:ui' as ui;
 
@@ -7,8 +7,13 @@ import 'package:e_class/models/courses/course.dart';
 import 'package:e_class/screens/courses/course_detail_screen.dart';
 import 'package:e_class/screens/messages/conversation_screen.dart';
 import 'package:e_class/screens/messages/compose_message_screen.dart';
+import 'package:e_class/screens/messages/discover_communities_screen.dart';
+import 'package:e_class/screens/messages/user_profile_screen.dart';
+import 'package:e_class/screens/settings/app_settings_screen.dart';
+import 'package:e_class/screens/settings/integrations_screen.dart';
 import 'package:e_class/screens/settings/customization_screen.dart';
 import 'package:e_class/services/auth_service.dart';
+import 'package:e_class/services/community_service.dart';
 import 'package:e_class/services/database_service.dart';
 import 'package:e_class/services/notification_service.dart';
 import 'package:e_class/services/study_helper_service.dart';
@@ -24,6 +29,43 @@ import 'package:image_picker/image_picker.dart';
 import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:url_launcher/url_launcher.dart';
+
+class _OfficeHoursSlot {
+  const _OfficeHoursSlot({
+    required this.weekday,
+    required this.startHour,
+    required this.startMinute,
+    required this.endHour,
+    required this.endMinute,
+  });
+
+  final int weekday;
+  final int startHour;
+  final int startMinute;
+  final int endHour;
+  final int endMinute;
+}
+
+String _weekdayShortLabel(int weekday) {
+  switch (weekday) {
+    case DateTime.monday:
+      return 'Mon';
+    case DateTime.tuesday:
+      return 'Tue';
+    case DateTime.wednesday:
+      return 'Wed';
+    case DateTime.thursday:
+      return 'Thu';
+    case DateTime.friday:
+      return 'Fri';
+    case DateTime.saturday:
+      return 'Sat';
+    case DateTime.sunday:
+      return 'Sun';
+    default:
+      return '';
+  }
+}
 
 class _ScheduleEntry {
   const _ScheduleEntry({
@@ -48,6 +90,7 @@ class _ScheduleEntry {
 class _GradeEntry {
   const _GradeEntry({
     required this.id,
+    required this.subjectCode,
     required this.subject,
     required this.grade,
     required this.credits,
@@ -56,6 +99,7 @@ class _GradeEntry {
   });
 
   final String id;
+  final String subjectCode;
   final String subject;
   final String grade;
   final int credits;
@@ -88,6 +132,7 @@ class _EmailThreadPreview {
     required this.hasUnread,
     required this.unreadCount,
     required this.lastMessageIsMine,
+    this.isCommunity = false,
   });
 
   final String threadId;
@@ -99,6 +144,7 @@ class _EmailThreadPreview {
   final bool hasUnread;
   final int unreadCount;
   final bool lastMessageIsMine;
+  final bool isCommunity;
 }
 
 class _UserAvatarData {
@@ -106,11 +152,13 @@ class _UserAvatarData {
     required this.avatarId,
     required this.profilePicBase64,
     required this.profilePicUrl,
+    required this.displayName,
   });
 
   final String avatarId;
   final String profilePicBase64;
   final String profilePicUrl;
+  final String displayName;
 }
 
 class MainScreen extends StatefulWidget {
@@ -135,6 +183,25 @@ class _MainScreenState extends State<MainScreen> {
   static const Color _telegramCanvas = Color(0xFFEFF4FA);
   static const Color _telegramSurface = Color(0xFFFFFFFF);
   static const Color _telegramMuted = Color(0xFF7B8A9A);
+  static const String _officeHoursThreadId = 'office_hours_ae2';
+  static const String _officeHoursGroupId = 'office_hours_group';
+  static const String _officeHoursLabel = 'Office hours • AE2';
+  static const List<_OfficeHoursSlot> _officeHoursSchedule = [
+    _OfficeHoursSlot(
+      weekday: DateTime.monday,
+      startHour: 10,
+      startMinute: 0,
+      endHour: 12,
+      endMinute: 0,
+    ),
+    _OfficeHoursSlot(
+      weekday: DateTime.wednesday,
+      startHour: 14,
+      startMinute: 0,
+      endHour: 16,
+      endMinute: 0,
+    ),
+  ];
 
   bool _isDarkMode(BuildContext context) =>
       Theme.of(context).brightness == Brightness.dark;
@@ -156,6 +223,81 @@ class _MainScreenState extends State<MainScreen> {
 
   Color _inboxPrimaryTextColor(BuildContext context) =>
       _isDarkMode(context) ? const Color(0xFFF5F7FA) : const Color(0xFF203040);
+
+  DateTimeRange _windowForSlot(DateTime anchor, _OfficeHoursSlot slot) {
+    return DateTimeRange(
+      start: DateTime(
+        anchor.year,
+        anchor.month,
+        anchor.day,
+        slot.startHour,
+        slot.startMinute,
+      ),
+      end: DateTime(
+        anchor.year,
+        anchor.month,
+        anchor.day,
+        slot.endHour,
+        slot.endMinute,
+      ),
+    );
+  }
+
+  DateTimeRange? _activeOfficeHoursWindow(DateTime now) {
+    for (final slot in _officeHoursSchedule) {
+      if (slot.weekday != now.weekday) continue;
+      final window = _windowForSlot(now, slot);
+      final started =
+          now.isAfter(window.start) || now.isAtSameMomentAs(window.start);
+      if (started && now.isBefore(window.end)) {
+        return window;
+      }
+    }
+    return null;
+  }
+
+  DateTimeRange? _nextOfficeHoursWindow(DateTime now) {
+    DateTimeRange? nextWindow;
+    for (var offset = 0; offset < 7; offset++) {
+      final day = DateTime(
+        now.year,
+        now.month,
+        now.day,
+      ).add(Duration(days: offset));
+      for (final slot in _officeHoursSchedule) {
+        if (slot.weekday != day.weekday) continue;
+        final window = _windowForSlot(day, slot);
+        if (window.end.isBefore(now) || window.end.isAtSameMomentAs(now)) {
+          continue;
+        }
+        if (nextWindow == null || window.start.isBefore(nextWindow.start)) {
+          nextWindow = window;
+        }
+      }
+    }
+    return nextWindow;
+  }
+
+  DateTimeRange _officeHoursWindow(DateTime now) {
+    return _activeOfficeHoursWindow(now) ??
+        _nextOfficeHoursWindow(now) ??
+        _windowForSlot(now, _officeHoursSchedule.first);
+  }
+
+  String _officeHoursPreviewMessage(DateTime now) {
+    final window = _officeHoursWindow(now);
+    final open = _activeOfficeHoursWindow(now) != null;
+    final startLabel =
+        '${window.start.hour.toString().padLeft(2, '0')}:${window.start.minute.toString().padLeft(2, '0')}';
+    final endLabel =
+        '${window.end.hour.toString().padLeft(2, '0')}:${window.end.minute.toString().padLeft(2, '0')}';
+    final formattedWindow = open || window.start.weekday == now.weekday
+        ? '$startLabel-$endLabel'
+        : '${_weekdayShortLabel(window.start.weekday)} $startLabel-$endLabel';
+    return open
+        ? 'Office hours open now ($formattedWindow)'
+        : 'Office hours open $formattedWindow';
+  }
 
   int _selectedIndex = 0;
   int _selectedInboxTab = 0;
@@ -606,6 +748,7 @@ class _MainScreenState extends State<MainScreen> {
           avatarId: (data['avatarId'] as String?)?.trim() ?? '',
           profilePicBase64: (data['profilePicBase64'] as String?)?.trim() ?? '',
           profilePicUrl: (data['profilePicUrl'] as String?)?.trim() ?? '',
+          displayName: (data['displayName'] as String?)?.trim() ?? '',
         );
       }
 
@@ -630,6 +773,7 @@ class _MainScreenState extends State<MainScreen> {
         'avatarId': data.avatarId,
         'profilePicBase64': data.profilePicBase64,
         'profilePicUrl': data.profilePicUrl,
+        'displayName': data.displayName,
       };
     });
 
@@ -1115,26 +1259,67 @@ class _MainScreenState extends State<MainScreen> {
         .toList();
   }
 
-  ({String title, List<_ScheduleEntry> entries}) _scheduleSectionState(
-    List<_ScheduleEntry> schedule,
-  ) {
-    final todayEntries = _todaySchedule(schedule);
+  ({
+    String heading,
+    String dateLabel,
+    String? emptyLabel,
+    String? emptyHint,
+    List<_ScheduleEntry> entries,
+  })
+  _homeScheduleState(List<_ScheduleEntry> schedule) {
     final now = _nowInTashkent();
+    final todayEntries = _todaySchedule(schedule);
+    final upcomingEntries = _upcomingSchedule(schedule);
     final hasRemainingToday = todayEntries.any((entry) {
       final end = _entryEndDateTime(entry, now);
       return end != null && end.isAfter(now);
     });
 
-    if (todayEntries.isNotEmpty && hasRemainingToday) {
-      return (title: 'Today\'s Classes', entries: todayEntries);
+    if (hasRemainingToday) {
+      return (
+        heading: 'Today',
+        dateLabel: _formattedTodayDate,
+        emptyLabel: null,
+        emptyHint: null,
+        entries: todayEntries,
+      );
     }
 
-    final upcomingEntries = _upcomingSchedule(schedule);
     if (upcomingEntries.isNotEmpty) {
-      return (title: 'Upcoming Classes', entries: upcomingEntries);
+      final first = upcomingEntries.first;
+      final start = _entryStartDateTime(first, now);
+      final offset = start == null
+          ? 0
+          : DateTime(
+              start.year,
+              start.month,
+              start.day,
+            ).difference(DateTime(now.year, now.month, now.day)).inDays;
+      final heading = switch (offset) {
+        1 => 'Tomorrow',
+        2 => 'After Tomorrow',
+        _ => _weekdayLabel(first.dayIndex),
+      };
+      final dateLabel = start == null
+          ? _weekdayDateLabel(first.dayIndex)
+          : _weekdayDateLabel(first.dayIndex, date: start);
+
+      return (
+        heading: heading,
+        dateLabel: dateLabel,
+        emptyLabel: 'No classes today',
+        emptyHint: null,
+        entries: upcomingEntries,
+      );
     }
 
-    return (title: 'Today\'s Classes', entries: todayEntries);
+    return (
+      heading: 'Today',
+      dateLabel: _formattedTodayDate,
+      emptyLabel: 'No classes today',
+      emptyHint: 'Use Timetable to check the rest of your week.',
+      entries: const <_ScheduleEntry>[],
+    );
   }
 
   int _startMinutes(String timeRange) {
@@ -1318,6 +1503,85 @@ class _MainScreenState extends State<MainScreen> {
         builder: (_) => CourseDetailScreen(
           course: course,
           currentWeek: _currentAcademicWeek(),
+        ),
+      ),
+    );
+  }
+
+  void _openCourseFromGrade(
+    _GradeEntry entry,
+    Map<String, Map<String, dynamic>> subjectsByCode,
+  ) {
+    final scheduleEntry = _ScheduleEntry(
+      dayIndex: 1,
+      dayLabel: '',
+      time: '',
+      subjectCode: entry.subjectCode,
+      subject: entry.subject,
+      room: '',
+      professor: 'TBA',
+    );
+    final course = _courseFromScheduleEntry(scheduleEntry, subjectsByCode);
+    _openCourseDetails(course);
+  }
+
+  Course _courseFromSubjectMap(
+    String subjectCode,
+    Map<String, dynamic> subjectData,
+  ) {
+    final title = (subjectData['title'] as String?)?.trim().isNotEmpty == true
+        ? (subjectData['title'] as String).trim()
+        : (subjectCode.trim().isEmpty ? 'Course' : subjectCode.trim());
+    final normalizedCode = subjectCode.trim().toUpperCase();
+    final courseIdSource = normalizedCode.isNotEmpty ? normalizedCode : title;
+    final courseId = courseIdSource
+        .toLowerCase()
+        .replaceAll(RegExp(r'[^a-z0-9]+'), '_')
+        .replaceAll(RegExp(r'^_+|_+$'), '');
+
+    return Course(
+      id: courseId.isEmpty ? 'course' : courseId,
+      title: title,
+      icon: (subjectData['icon'] as String?)?.trim().isNotEmpty == true
+          ? (subjectData['icon'] as String).trim()
+          : 'book',
+      professorId: (subjectData['professorId'] as String?)?.trim() ?? '',
+      professorName: (subjectData['professorName'] as String?)?.trim() ?? '',
+      semester: (subjectData['semester'] as String?)?.trim().isNotEmpty == true
+          ? (subjectData['semester'] as String).trim()
+          : 'Spring 2026',
+    );
+  }
+
+  void _openNearestDeadlineTask(
+    ({
+      String subjectCode,
+      String subject,
+      DateTime deadline,
+      int weekNumber,
+      String materialTitle,
+      String materialType,
+    })
+    nearestDeadline,
+    Map<String, Map<String, dynamic>> subjectsByCode,
+  ) {
+    final subjectCode = nearestDeadline.subjectCode.trim().toUpperCase();
+    final subjectData = subjectCode.isNotEmpty
+        ? subjectsByCode[subjectCode]
+        : null;
+    final course = subjectData != null
+        ? _courseFromSubjectMap(subjectCode, subjectData)
+        : _courseFromTimetableCard(nearestDeadline.subject, '');
+
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => CourseDetailScreen(
+          course: course,
+          currentWeek: _currentAcademicWeek(),
+          initialWeek: nearestDeadline.weekNumber,
+          initialMaterialTitle: nearestDeadline.materialTitle,
+          initialMaterialType: nearestDeadline.materialType,
         ),
       ),
     );
@@ -1782,6 +2046,7 @@ class _MainScreenState extends State<MainScreen> {
       entries.add(
         _GradeEntry(
           id: doc.id,
+          subjectCode: subjectCode,
           subject: _normalizedGradeSubject(
             subject.isEmpty ? subjectCode : subject,
           ),
@@ -2092,6 +2357,7 @@ class _MainScreenState extends State<MainScreen> {
 
     final userIds =
         threads
+            .where((thread) => !thread.isCommunity)
             .map((thread) => thread.otherUserId.trim())
             .where((id) => id.isNotEmpty)
             .toSet()
@@ -2101,7 +2367,9 @@ class _MainScreenState extends State<MainScreen> {
 
     final syncKey = userIds.join(',');
     final hasMissingCachedAvatar = userIds.any(
-      (id) => !_threadAvatarCache.containsKey(id),
+      (id) =>
+          !_threadAvatarCache.containsKey(id) ||
+          _threadAvatarCache[id]!.displayName.trim().isEmpty,
     );
     if (!hasMissingCachedAvatar && syncKey == _lastAvatarSyncKey) {
       return;
@@ -2145,6 +2413,7 @@ class _MainScreenState extends State<MainScreen> {
     List<_EmailThreadPreview> threads,
   ) async {
     final userIds = threads
+        .where((thread) => !thread.isCommunity)
         .map((thread) => thread.otherUserId.trim())
         .where((id) => id.isNotEmpty)
         .toSet()
@@ -2160,10 +2429,35 @@ class _MainScreenState extends State<MainScreen> {
 
       for (final doc in snapshot.docs) {
         final data = doc.data();
+        final fullName =
+            (data['fullName'] as String?)?.trim().isNotEmpty == true
+            ? (data['fullName'] as String).trim()
+            : '${(data['firstName'] as String?)?.trim() ?? ''} ${(data['lastName'] as String?)?.trim() ?? ''}'
+                  .trim();
         result[doc.id] = _UserAvatarData(
           avatarId: (data['avatarId'] as String?)?.trim() ?? '',
           profilePicBase64: (data['profilePicBase64'] as String?)?.trim() ?? '',
           profilePicUrl: (data['profilePicUrl'] as String?)?.trim() ?? '',
+          displayName: fullName,
+        );
+      }
+
+      final foundIds = snapshot.docs.map((doc) => doc.id).toSet();
+      final missingIds = chunk.where((id) => !foundIds.contains(id)).toList();
+      if (missingIds.isEmpty) continue;
+
+      final staffSnapshot = await FirebaseFirestore.instance
+          .collection('staff')
+          .where(FieldPath.documentId, whereIn: missingIds)
+          .get();
+
+      for (final doc in staffSnapshot.docs) {
+        final data = doc.data();
+        result[doc.id] = _UserAvatarData(
+          avatarId: '',
+          profilePicBase64: '',
+          profilePicUrl: (data['avatarUrl'] as String?)?.trim() ?? '',
+          displayName: (data['name'] as String?)?.trim() ?? '',
         );
       }
     }
@@ -2228,6 +2522,7 @@ class _MainScreenState extends State<MainScreen> {
           hasUnread: hasUnread,
           unreadCount: unreadCountByThread[threadId] ?? 0,
           lastMessageIsMine: isMine,
+          isCommunity: false,
         );
         continue;
       }
@@ -2251,6 +2546,7 @@ class _MainScreenState extends State<MainScreen> {
         hasUnread: (unreadCountByThread[threadId] ?? 0) > 0,
         unreadCount: unreadCountByThread[threadId] ?? current.unreadCount,
         lastMessageIsMine: isLatest ? isMine : current.lastMessageIsMine,
+        isCommunity: false,
       );
     }
 
@@ -2267,6 +2563,7 @@ class _MainScreenState extends State<MainScreen> {
                 hasUnread: (unreadCountByThread[thread.threadId] ?? 0) > 0,
                 unreadCount: unreadCountByThread[thread.threadId] ?? 0,
                 lastMessageIsMine: thread.lastMessageIsMine,
+                isCommunity: false,
               ),
             )
             .toList()
@@ -2276,7 +2573,106 @@ class _MainScreenState extends State<MainScreen> {
             if (b.createdAt == null) return -1;
             return b.createdAt!.compareTo(a.createdAt!);
           });
+    if (channel == 'chat' &&
+        !orderedThreads.any(
+          (thread) => thread.threadId == _officeHoursThreadId,
+        )) {
+      final now = DateTime.now();
+      orderedThreads.insert(
+        0,
+        _EmailThreadPreview(
+          threadId: _officeHoursThreadId,
+          otherUserId: _officeHoursGroupId,
+          otherUserName: _officeHoursLabel,
+          subject: 'AE2',
+          message: _officeHoursPreviewMessage(now),
+          createdAt: Timestamp.fromDate(now),
+          hasUnread: false,
+          unreadCount: 0,
+          lastMessageIsMine: false,
+          isCommunity: false,
+        ),
+      );
+    }
     return orderedThreads;
+  }
+
+  List<_EmailThreadPreview> _buildCommunityThreads(
+    List<QueryDocumentSnapshot<Map<String, dynamic>>> docs,
+    String currentUserId,
+  ) {
+    final threads =
+        docs
+            .map((doc) {
+              final data = doc.data();
+              final lastMessageAt = data['lastMessageAt'] as Timestamp?;
+              return _EmailThreadPreview(
+                threadId: 'community_${doc.id}',
+                otherUserId: doc.id,
+                otherUserName: (data['name'] as String?)?.trim() ?? 'Community',
+                subject: (data['topic'] as String?)?.trim() ?? 'Community',
+                message: (data['lastMessage'] as String?)?.trim() ?? '',
+                createdAt: lastMessageAt,
+                hasUnread: false,
+                unreadCount: 0,
+                lastMessageIsMine:
+                    (data['lastSenderId'] as String?)?.trim() == currentUserId,
+                isCommunity: true,
+              );
+            })
+            .toList(growable: false)
+          ..sort((a, b) {
+            if (a.createdAt == null && b.createdAt == null) return 0;
+            if (a.createdAt == null) return 1;
+            if (b.createdAt == null) return -1;
+            return b.createdAt!.compareTo(a.createdAt!);
+          });
+    return threads;
+  }
+
+  Color _communityThreadColor(String seed) {
+    const palette = [
+      Color(0xFF1D4ED8),
+      Color(0xFF0EA5A4),
+      Color(0xFFEF6C45),
+      Color(0xFF8B5CF6),
+      Color(0xFF06B6D4),
+    ];
+    final index =
+        seed.codeUnits.fold<int>(0, (total, value) => total + value) %
+        palette.length;
+    return palette[index];
+  }
+
+  Widget _buildThreadLeadingAvatar(
+    _EmailThreadPreview thread,
+    _UserAvatarData? avatarData,
+    String senderName,
+  ) {
+    if (!thread.isCommunity) {
+      return UserAvatar(
+        avatarId: avatarData?.avatarId,
+        profilePicBase64: avatarData?.profilePicBase64,
+        profilePicUrl: avatarData?.profilePicUrl,
+        displayName: senderName,
+        radius: 28,
+        onTap: () => Navigator.of(context).push(
+          MaterialPageRoute(
+            builder: (context) => UserProfileScreen(
+              userId: thread.otherUserId,
+              fallbackName: senderName,
+            ),
+          ),
+        ),
+      );
+    }
+
+    final color = _communityThreadColor(thread.otherUserId);
+    return CircleAvatar(
+      radius: 28,
+      backgroundColor: color.withValues(alpha: 0.18),
+      child: Icon(Icons.groups_rounded, color: color, size: 28),
+    );
   }
 
   String _threadTimestampLabel(Timestamp? timestamp) {
@@ -2433,8 +2829,10 @@ class _MainScreenState extends State<MainScreen> {
     final muted = _inboxMutedColor(context);
     final primaryText = _inboxPrimaryTextColor(context);
     final isUnread = thread.hasUnread;
-    final senderName = thread.otherUserName;
     final avatarData = _threadAvatarCache[thread.otherUserId];
+    final senderName = avatarData?.displayName.trim().isNotEmpty == true
+        ? avatarData!.displayName.trim()
+        : thread.otherUserName;
     final preview = _threadPreviewLabel(thread, isChatTab);
     final timeLabel = _threadTimestampLabel(thread.createdAt);
 
@@ -2442,29 +2840,17 @@ class _MainScreenState extends State<MainScreen> {
       onTap: () => _showEmailDetails({
         'threadId': thread.threadId,
         'otherUserId': thread.otherUserId,
-        'otherUserName': thread.otherUserName,
+        'otherUserName': senderName,
         'subject': thread.subject,
         'channel': isChatTab ? 'chat' : 'mail',
+        'isCommunity': thread.isCommunity,
       }),
       child: Padding(
         padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
         child: Row(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            UserAvatar(
-              avatarId: avatarData?.avatarId,
-              profilePicBase64: avatarData?.profilePicBase64,
-              profilePicUrl: avatarData?.profilePicUrl,
-              displayName: senderName,
-              radius: 28,
-              onTap: () => UserAvatar.showViewer(
-                context,
-                avatarId: avatarData?.avatarId,
-                profilePicBase64: avatarData?.profilePicBase64,
-                profilePicUrl: avatarData?.profilePicUrl,
-                displayName: senderName,
-              ),
-            ),
+            _buildThreadLeadingAvatar(thread, avatarData, senderName),
             const SizedBox(width: 12),
             Expanded(
               child: Column(
@@ -2499,6 +2885,20 @@ class _MainScreenState extends State<MainScreen> {
                     ],
                   ),
                   const SizedBox(height: 5),
+                  if (thread.isCommunity)
+                    Padding(
+                      padding: const EdgeInsets.only(bottom: 5),
+                      child: Text(
+                        thread.subject,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          fontSize: 12,
+                          fontWeight: FontWeight.w700,
+                          color: accent,
+                        ),
+                      ),
+                    ),
                   Row(
                     crossAxisAlignment: CrossAxisAlignment.center,
                     children: [
@@ -2569,6 +2969,7 @@ class _MainScreenState extends State<MainScreen> {
           channel: (email['channel'] as String?)?.trim().isNotEmpty == true
               ? (email['channel'] as String).trim()
               : 'mail',
+          isCommunity: email['isCommunity'] == true,
           recipientName:
               ((email['otherUserName'] as String?)?.trim().isNotEmpty == true)
               ? (email['otherUserName'] as String).trim()
@@ -2754,6 +3155,19 @@ class _MainScreenState extends State<MainScreen> {
                           currentColor: Theme.of(context).primaryColor,
                           currentThemeMode: widget.currentThemeMode,
                         ),
+                      ),
+                    );
+                  },
+                ),
+                ListTile(
+                  leading: const Icon(Icons.explore_rounded),
+                  title: const Text('Discover Communities'),
+                  onTap: () {
+                    Navigator.pop(context);
+                    Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                        builder: (context) => const DiscoverCommunitiesScreen(),
                       ),
                     );
                   },
@@ -3161,11 +3575,22 @@ class _MainScreenState extends State<MainScreen> {
     return null;
   }
 
-  ({String subject, DateTime deadline})?
+  ({
+    String subjectCode,
+    String subject,
+    DateTime deadline,
+    int weekNumber,
+    String materialTitle,
+    String materialType,
+  })?
   _nearestHomeworkDeadlineFromSubjectDocs(List<QueryDocumentSnapshot> docs) {
     final now = (_serverNow ?? _nowInTashkent()).toUtc();
     DateTime? nearest;
+    String nearestSubjectCode = '';
     String nearestSubject = '';
+    int nearestWeekNumber = 1;
+    String nearestMaterialTitle = '';
+    String nearestMaterialType = '';
 
     for (final doc in docs) {
       final data = doc.data() as Map<String, dynamic>?;
@@ -3186,6 +3611,21 @@ class _MainScreenState extends State<MainScreen> {
         final type = (item['type'] as String?)?.trim().toLowerCase() ?? '';
         if (type != 'homework') continue;
 
+        final materialTitle = (item['title'] as String?)?.trim() ?? '';
+        final weekNumber = _parseCredits(item['weekNumber']);
+        final normalizedWeekNumber = weekNumber > 0 ? weekNumber : 1;
+        final courseId = (subjectCode?.trim().isNotEmpty == true)
+            ? subjectCode!.trim().toUpperCase()
+            : doc.id.trim().toUpperCase();
+        if (materialTitle.isNotEmpty &&
+            CourseDetailScreen.hasUploadedHomework(
+              courseId: courseId,
+              weekNumber: normalizedWeekNumber,
+              materialTitle: materialTitle,
+            )) {
+          continue;
+        }
+
         final deadline = _updateDateFromValue(
           item['deadline'] ?? item['dueDate'],
         );
@@ -3196,13 +3636,24 @@ class _MainScreenState extends State<MainScreen> {
 
         if (nearest == null || deadlineUtc.isBefore(nearest)) {
           nearest = deadlineUtc;
+          nearestSubjectCode = courseId;
           nearestSubject = subject;
+          nearestWeekNumber = normalizedWeekNumber;
+          nearestMaterialTitle = materialTitle;
+          nearestMaterialType = type;
         }
       }
     }
 
     if (nearest == null) return null;
-    return (subject: nearestSubject, deadline: nearest);
+    return (
+      subjectCode: nearestSubjectCode,
+      subject: nearestSubject,
+      deadline: nearest,
+      weekNumber: nearestWeekNumber,
+      materialTitle: nearestMaterialTitle,
+      materialType: nearestMaterialType,
+    );
   }
 
   List<
@@ -3825,7 +4276,7 @@ class _MainScreenState extends State<MainScreen> {
                     final schedule = snapshot.hasData
                         ? _parseScheduleData(snapshot.data!)
                         : const <_ScheduleEntry>[];
-                    final scheduleState = _scheduleSectionState(schedule);
+                    final homeScheduleState = _homeScheduleState(schedule);
                     final activeEntry = _activeClassEntry(schedule);
                     final nearestUpcomingEntry = _nearestUpcomingEntry(
                       schedule,
@@ -3856,14 +4307,14 @@ class _MainScreenState extends State<MainScreen> {
                                 crossAxisAlignment: CrossAxisAlignment.start,
                                 children: [
                                   Text(
-                                    'Today',
+                                    homeScheduleState.heading,
                                     style: Theme.of(context)
                                         .textTheme
                                         .titleLarge
                                         ?.copyWith(fontWeight: FontWeight.bold),
                                   ),
                                   Text(
-                                    _formattedTodayDate,
+                                    homeScheduleState.dateLabel,
                                     style: Theme.of(context)
                                         .textTheme
                                         .bodyMedium
@@ -3897,7 +4348,7 @@ class _MainScreenState extends State<MainScreen> {
                                 ),
                               ),
                             )
-                          else if (scheduleState.entries.isEmpty)
+                          else if (homeScheduleState.entries.isEmpty)
                             Padding(
                               padding: const EdgeInsets.symmetric(vertical: 32),
                               child: Center(
@@ -3912,7 +4363,8 @@ class _MainScreenState extends State<MainScreen> {
                                     ),
                                     const SizedBox(height: 16),
                                     Text(
-                                      'No classes left for today',
+                                      homeScheduleState.emptyLabel ??
+                                          'No classes today',
                                       style: TextStyle(
                                         color: Theme.of(
                                           context,
@@ -3923,7 +4375,8 @@ class _MainScreenState extends State<MainScreen> {
                                     ),
                                     const SizedBox(height: 8),
                                     Text(
-                                      'Use Timetable to check what is coming next this week.',
+                                      homeScheduleState.emptyHint ??
+                                          'Use Timetable to check what is coming next this week.',
                                       textAlign: TextAlign.center,
                                       style: TextStyle(
                                         color: Theme.of(
@@ -3935,25 +4388,53 @@ class _MainScreenState extends State<MainScreen> {
                                 ),
                               ),
                             )
-                          else
-                            ...scheduleState.entries.map((entry) {
-                              final isActive = _isActive(
-                                entry.time,
-                                dayIndex: entry.dayIndex,
-                              );
-                              final isUpcoming =
-                                  !hasActiveClass &&
-                                  !isActive &&
-                                  identical(nearestUpcomingEntry, entry);
-                              return _buildTimetableItem(
-                                entry.time,
-                                entry.subject,
-                                entry.room,
-                                entry.professor,
-                                isActive,
-                                isUpcoming,
-                              );
-                            }),
+                          else if (homeScheduleState.emptyLabel != null &&
+                              homeScheduleState.emptyHint != null)
+                            Padding(
+                              padding: const EdgeInsets.only(bottom: 12),
+                              child: Container(
+                                width: double.infinity,
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 14,
+                                  vertical: 12,
+                                ),
+                                decoration: BoxDecoration(
+                                  color: Theme.of(context)
+                                      .colorScheme
+                                      .surfaceContainerHighest
+                                      .withValues(alpha: 0.55),
+                                  borderRadius: BorderRadius.circular(14),
+                                ),
+                                child: Text(
+                                  homeScheduleState.emptyHint ??
+                                      homeScheduleState.emptyLabel!,
+                                  style: TextStyle(
+                                    color: Theme.of(
+                                      context,
+                                    ).colorScheme.onSurfaceVariant,
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                ),
+                              ),
+                            ),
+                          ...homeScheduleState.entries.map((entry) {
+                            final isActive = _isActive(
+                              entry.time,
+                              dayIndex: entry.dayIndex,
+                            );
+                            final isUpcoming =
+                                !hasActiveClass &&
+                                !isActive &&
+                                identical(nearestUpcomingEntry, entry);
+                            return _buildTimetableItem(
+                              entry.time,
+                              entry.subject,
+                              entry.room,
+                              entry.professor,
+                              isActive,
+                              isUpcoming,
+                            );
+                          }),
                           const SizedBox(height: 28),
                           StreamBuilder<QuerySnapshot>(
                             stream: FirebaseFirestore.instance
@@ -3990,6 +4471,9 @@ class _MainScreenState extends State<MainScreen> {
                               final subjectDocs =
                                   homeInfoSnapshot.data?.docs ??
                                   const <QueryDocumentSnapshot<Object?>>[];
+                              final subjectsByCode = _buildSubjectIndex(
+                                subjectDocs.cast<QueryDocumentSnapshot>(),
+                              );
                               final nearestDeadline =
                                   _nearestHomeworkDeadlineFromSubjectDocs(
                                     subjectDocs,
@@ -4056,6 +4540,12 @@ class _MainScreenState extends State<MainScreen> {
                                         iconColor: Theme.of(
                                           context,
                                         ).colorScheme.error,
+                                        onTap: nearestDeadline == null
+                                            ? null
+                                            : () => _openNearestDeadlineTask(
+                                                nearestDeadline,
+                                                subjectsByCode,
+                                              ),
                                       ),
                                     ],
                                   ),
@@ -4467,7 +4957,11 @@ class _MainScreenState extends State<MainScreen> {
                                   color: Colors.transparent,
                                   child: InkWell(
                                     borderRadius: BorderRadius.circular(16),
-                                    onTap: () => _showGradeDetails(entry),
+                                    onTap: () => _openCourseFromGrade(
+                                      entry,
+                                      subjectsByCode,
+                                    ),
+                                    onLongPress: () => _showGradeDetails(entry),
                                     child: Padding(
                                       padding: const EdgeInsets.all(16),
                                       child: Row(
@@ -4634,6 +5128,44 @@ class _MainScreenState extends State<MainScreen> {
           Padding(
             padding: const EdgeInsets.only(left: 8, bottom: 12),
             child: Text(
+              'Integrations',
+              style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                color: Theme.of(context).colorScheme.primary,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+          ),
+          Card(
+            margin: EdgeInsets.zero,
+            clipBehavior: Clip.antiAlias,
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(16),
+            ),
+            child: Column(
+              children: [
+                ListTile(
+                  leading: Icon(
+                    Icons.extension_outlined,
+                    color: Theme.of(context).colorScheme.primary,
+                  ),
+                  title: const Text('Integrations'),
+                  subtitle: const Text('Connect GitHub and LinkedIn accounts'),
+                  trailing: const Icon(Icons.chevron_right),
+                  onTap: () {
+                    Navigator.of(context).push(
+                      MaterialPageRoute(
+                        builder: (context) => const IntegrationsScreen(),
+                      ),
+                    );
+                  },
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 24),
+          Padding(
+            padding: const EdgeInsets.only(left: 8, bottom: 12),
+            child: Text(
               'Campus',
               style: Theme.of(context).textTheme.titleMedium?.copyWith(
                 color: Theme.of(context).colorScheme.primary,
@@ -4665,6 +5197,27 @@ class _MainScreenState extends State<MainScreen> {
                     );
                   },
                 ),
+                Divider(
+                  height: 1,
+                  indent: 56,
+                  color: Theme.of(context).colorScheme.outlineVariant,
+                ),
+                ListTile(
+                  leading: Icon(
+                    Icons.explore_outlined,
+                    color: Theme.of(context).colorScheme.primary,
+                  ),
+                  title: const Text('Discover Communities'),
+                  subtitle: const Text('Find IT groups and join shared chats'),
+                  trailing: const Icon(Icons.chevron_right),
+                  onTap: () {
+                    Navigator.of(context).push(
+                      MaterialPageRoute(
+                        builder: (context) => const DiscoverCommunitiesScreen(),
+                      ),
+                    );
+                  },
+                ),
               ],
             ),
           ),
@@ -4689,42 +5242,35 @@ class _MainScreenState extends State<MainScreen> {
               children: [
                 ListTile(
                   leading: Icon(
-                    Icons.palette_outlined,
+                    Icons.settings_outlined,
                     color: Theme.of(context).colorScheme.primary,
                   ),
-                  title: const Text('Appearance'),
-                  subtitle: const Text('Theme color'),
+                  title: const Text('Settings'),
+                  subtitle: const Text(
+                    'Appearance, notifications, security and more',
+                  ),
                   trailing: const Icon(Icons.chevron_right),
                   onTap: () {
                     Navigator.push(
                       context,
                       MaterialPageRoute(
-                        builder: (context) => CustomizationScreen(
+                        builder: (context) => AppSettingsScreen(
                           onColorChange: widget.onColorChange,
                           onThemeModeChange: widget.onThemeModeChange,
                           currentColor: Theme.of(context).colorScheme.primary,
                           currentThemeMode: widget.currentThemeMode,
+                          notificationsEnabled: _notificationsEnabled,
+                          onNotificationsChanged: (val) {
+                            setState(() {
+                              _notificationsEnabled = val;
+                            });
+                          },
+                          onEditAvatar: () async {
+                            _showEditProfileDialog();
+                          },
                         ),
                       ),
                     );
-                  },
-                ),
-                Divider(
-                  height: 1,
-                  indent: 56,
-                  color: Theme.of(context).colorScheme.outlineVariant,
-                ),
-                SwitchListTile(
-                  secondary: const Icon(
-                    Icons.notifications_outlined,
-                    color: Colors.orange,
-                  ),
-                  title: const Text('Notifications'),
-                  value: _notificationsEnabled,
-                  onChanged: (val) {
-                    setState(() {
-                      _notificationsEnabled = val;
-                    });
                   },
                 ),
               ],
@@ -5107,6 +5653,8 @@ class _MainScreenState extends State<MainScreen> {
     final surface = _inboxSurfaceColor(context);
     final header = _inboxHeaderColor(context);
     final accent = _inboxAccentColor(context);
+    final currentUser = Provider.of<User?>(context);
+    final communityService = CommunityService(user: currentUser);
     return Scaffold(
       backgroundColor: canvas,
       floatingActionButton: Padding(
@@ -5122,169 +5670,210 @@ class _MainScreenState extends State<MainScreen> {
         ),
       ),
       floatingActionButtonLocation: FloatingActionButtonLocation.endFloat,
-      body: StreamBuilder<QuerySnapshot>(
-        stream: DatabaseService(
-          user: Provider.of<User?>(context),
-        ).emailMessages,
+      body: StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
+        stream: communityService.userDocumentStream(),
         builder: (context, snapshot) {
-          if (!snapshot.hasData) {
-            return const Center(child: CircularProgressIndicator());
-          }
-          final currentUser = Provider.of<User?>(context);
           if (currentUser == null) {
             return const SizedBox.shrink();
           }
+          final joinedCommunities =
+              ((snapshot.data?.data()?['joinedCommunities'] as List?) ??
+                      const [])
+                  .map((item) => item.toString())
+                  .toList(growable: false);
+          unawaited(communityService.ensureSeeded());
 
-          // Notification logic moved to _setupMessageListener
-          // DateTime maxTime = _lastMessageTime;
-          // ... (removed builder side-effect logic)
+          return StreamBuilder<QuerySnapshot>(
+            stream: DatabaseService(user: currentUser).emailMessages,
+            builder: (context, emailSnapshot) {
+              if (!emailSnapshot.hasData) {
+                return const Center(child: CircularProgressIndicator());
+              }
+              return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+                stream: _selectedInboxTab == 0
+                    ? communityService.joinedCommunitiesStream(
+                        joinedCommunities,
+                      )
+                    : const Stream.empty(),
+                builder: (context, communitySnapshot) {
+                  _ensureThreadAvatarCacheForUser(currentUser.uid);
+                  final isChatTab = _selectedInboxTab == 0;
+                  final privateThreads = _buildEmailThreads(
+                    emailSnapshot.data!.docs,
+                    currentUser.uid,
+                    isChatTab ? 'chat' : 'mail',
+                  );
+                  final communityThreads =
+                      isChatTab && communitySnapshot.hasData
+                      ? _buildCommunityThreads(
+                          communitySnapshot.data!.docs,
+                          currentUser.uid,
+                        )
+                      : const <_EmailThreadPreview>[];
+                  final allThreads = isChatTab
+                      ? (List<_EmailThreadPreview>.from(privateThreads)
+                          ..addAll(communityThreads)
+                          ..sort((a, b) {
+                            if (a.createdAt == null && b.createdAt == null) {
+                              return 0;
+                            }
+                            if (a.createdAt == null) return 1;
+                            if (b.createdAt == null) return -1;
+                            return b.createdAt!.compareTo(a.createdAt!);
+                          }))
+                      : privateThreads;
+                  final threads = allThreads
+                      .where(_threadMatchesInboxQuery)
+                      .toList();
+                  _queueThreadAvatarSync(threads);
 
-          _ensureThreadAvatarCacheForUser(currentUser.uid);
-          final allThreads = _buildEmailThreads(
-            snapshot.data!.docs,
-            currentUser.uid,
-            _selectedInboxTab == 0 ? 'chat' : 'mail',
-          );
-          final isChatTab = _selectedInboxTab == 0;
-          final threads = allThreads.where(_threadMatchesInboxQuery).toList();
-          _queueThreadAvatarSync(threads);
-
-          return Column(
-            children: [
-              Container(
-                padding: const EdgeInsets.fromLTRB(16, 20, 16, 16),
-                decoration: BoxDecoration(
-                  color: header,
-                  borderRadius: BorderRadius.only(
-                    bottomLeft: Radius.circular(28),
-                    bottomRight: Radius.circular(28),
-                  ),
-                ),
-                child: SafeArea(
-                  bottom: false,
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
+                  return Column(
                     children: [
-                      const Text(
-                        'Inbox',
-                        style: TextStyle(
-                          color: Colors.white,
-                          fontSize: 30,
-                          fontWeight: FontWeight.w800,
-                        ),
-                      ),
-                      const SizedBox(height: 14),
                       Container(
-                        padding: const EdgeInsets.all(4),
+                        padding: const EdgeInsets.fromLTRB(16, 20, 16, 16),
                         decoration: BoxDecoration(
-                          color: Colors.white.withValues(alpha: 0.18),
-                          borderRadius: BorderRadius.circular(22),
+                          color: header,
+                          borderRadius: BorderRadius.only(
+                            bottomLeft: Radius.circular(28),
+                            bottomRight: Radius.circular(28),
+                          ),
                         ),
-                        child: Row(
-                          children: [
-                            _buildInboxSegment(
-                              label: 'Chats',
-                              icon: Icons.chat_bubble_rounded,
-                              selected: isChatTab,
-                              onTap: () {
-                                if (_selectedInboxTab == 0) return;
-                                setState(() {
-                                  _selectedInboxTab = 0;
-                                  _inboxQuery = '';
-                                  _inboxSearchController.clear();
-                                });
-                              },
-                            ),
-                            _buildInboxSegment(
-                              label: 'Mail',
-                              icon: Icons.mail_rounded,
-                              selected: !isChatTab,
-                              onTap: () {
-                                if (_selectedInboxTab == 1) return;
-                                setState(() {
-                                  _selectedInboxTab = 1;
-                                  _inboxQuery = '';
-                                  _inboxSearchController.clear();
-                                });
-                              },
-                            ),
-                          ],
-                        ),
-                      ),
-                      const SizedBox(height: 12),
-                      Container(
-                        height: 48,
-                        decoration: BoxDecoration(
-                          color: Colors.white.withValues(alpha: 0.96),
-                          borderRadius: BorderRadius.circular(18),
-                        ),
-                        child: TextField(
-                          controller: _inboxSearchController,
-                          onChanged: (value) {
-                            setState(() {
-                              _inboxQuery = value;
-                            });
-                          },
-                          decoration: InputDecoration(
-                            hintText: isChatTab
-                                ? 'Search chats'
-                                : 'Search mail',
-                            prefixIcon: const Icon(Icons.search_rounded),
-                            suffixIcon: _inboxQuery.trim().isEmpty
-                                ? null
-                                : IconButton(
-                                    onPressed: () {
-                                      _inboxSearchController.clear();
-                                      setState(() {
-                                        _inboxQuery = '';
-                                      });
-                                    },
-                                    icon: const Icon(Icons.close_rounded),
+                        child: SafeArea(
+                          bottom: false,
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              const Text(
+                                'Inbox',
+                                style: TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 30,
+                                  fontWeight: FontWeight.w800,
+                                ),
+                              ),
+                              const SizedBox(height: 14),
+                              Container(
+                                padding: const EdgeInsets.all(4),
+                                decoration: BoxDecoration(
+                                  color: Colors.white.withValues(alpha: 0.18),
+                                  borderRadius: BorderRadius.circular(22),
+                                ),
+                                child: Row(
+                                  children: [
+                                    _buildInboxSegment(
+                                      label: 'Chats',
+                                      icon: Icons.chat_bubble_rounded,
+                                      selected: isChatTab,
+                                      onTap: () {
+                                        if (_selectedInboxTab == 0) return;
+                                        setState(() {
+                                          _selectedInboxTab = 0;
+                                          _inboxQuery = '';
+                                          _inboxSearchController.clear();
+                                        });
+                                      },
+                                    ),
+                                    _buildInboxSegment(
+                                      label: 'Mail',
+                                      icon: Icons.mail_rounded,
+                                      selected: !isChatTab,
+                                      onTap: () {
+                                        if (_selectedInboxTab == 1) return;
+                                        setState(() {
+                                          _selectedInboxTab = 1;
+                                          _inboxQuery = '';
+                                          _inboxSearchController.clear();
+                                        });
+                                      },
+                                    ),
+                                  ],
+                                ),
+                              ),
+                              const SizedBox(height: 12),
+                              Container(
+                                height: 48,
+                                decoration: BoxDecoration(
+                                  color: Colors.white.withValues(alpha: 0.96),
+                                  borderRadius: BorderRadius.circular(18),
+                                ),
+                                child: TextField(
+                                  controller: _inboxSearchController,
+                                  onChanged: (value) {
+                                    setState(() {
+                                      _inboxQuery = value;
+                                    });
+                                  },
+                                  decoration: InputDecoration(
+                                    hintText: isChatTab
+                                        ? 'Search chats'
+                                        : 'Search mail',
+                                    prefixIcon: const Icon(
+                                      Icons.search_rounded,
+                                    ),
+                                    suffixIcon: _inboxQuery.trim().isEmpty
+                                        ? null
+                                        : IconButton(
+                                            onPressed: () {
+                                              _inboxSearchController.clear();
+                                              setState(() {
+                                                _inboxQuery = '';
+                                              });
+                                            },
+                                            icon: const Icon(
+                                              Icons.close_rounded,
+                                            ),
+                                          ),
+                                    border: InputBorder.none,
+                                    contentPadding: const EdgeInsets.symmetric(
+                                      horizontal: 4,
+                                      vertical: 12,
+                                    ),
                                   ),
-                            border: InputBorder.none,
-                            contentPadding: const EdgeInsets.symmetric(
-                              horizontal: 4,
-                              vertical: 12,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                      Expanded(
+                        child: Container(
+                          margin: const EdgeInsets.only(top: 10),
+                          decoration: BoxDecoration(
+                            color: surface,
+                            borderRadius: BorderRadius.only(
+                              topLeft: Radius.circular(26),
+                              topRight: Radius.circular(26),
                             ),
                           ),
+                          child: threads.isEmpty
+                              ? _buildInboxEmptyState(isChatTab)
+                              : ListView.separated(
+                                  padding: const EdgeInsets.only(
+                                    top: 8,
+                                    bottom: 120,
+                                  ),
+                                  itemCount: threads.length,
+                                  separatorBuilder: (context, index) => Divider(
+                                    height: 1,
+                                    indent: 84,
+                                    endIndent: 16,
+                                    color: accent.withValues(alpha: 0.08),
+                                  ),
+                                  itemBuilder: (context, index) {
+                                    final thread = threads[index];
+                                    return _buildInboxThreadTile(
+                                      thread,
+                                      isChatTab: isChatTab,
+                                    );
+                                  },
+                                ),
                         ),
                       ),
                     ],
-                  ),
-                ),
-              ),
-              Expanded(
-                child: Container(
-                  margin: const EdgeInsets.only(top: 10),
-                  decoration: BoxDecoration(
-                    color: surface,
-                    borderRadius: BorderRadius.only(
-                      topLeft: Radius.circular(26),
-                      topRight: Radius.circular(26),
-                    ),
-                  ),
-                  child: threads.isEmpty
-                      ? _buildInboxEmptyState(isChatTab)
-                      : ListView.separated(
-                          padding: const EdgeInsets.only(top: 8, bottom: 120),
-                          itemCount: threads.length,
-                          separatorBuilder: (context, index) => Divider(
-                            height: 1,
-                            indent: 84,
-                            endIndent: 16,
-                            color: accent.withValues(alpha: 0.08),
-                          ),
-                          itemBuilder: (context, index) {
-                            final thread = threads[index];
-                            return _buildInboxThreadTile(
-                              thread,
-                              isChatTab: isChatTab,
-                            );
-                          },
-                        ),
-                ),
-              ),
-            ],
+                  );
+                },
+              );
+            },
           );
         },
       ),
