@@ -1635,6 +1635,7 @@ class _HomeworkDetailScreen extends StatefulWidget {
 class _HomeworkDetailScreenState extends State<_HomeworkDetailScreen> {
   List<_HomeworkUploadFile> _uploads = const [];
   bool _hasPendingUpload = false;
+  bool _isSubmitting = false;
 
   @override
   void initState() {
@@ -1645,6 +1646,7 @@ class _HomeworkDetailScreenState extends State<_HomeworkDetailScreen> {
   }
 
   Future<void> _pickFile() async {
+    if (_isSubmitting) return;
     final result = await FilePicker.platform.pickFiles(withData: false);
     if (result == null || result.files.isEmpty) return;
 
@@ -1662,12 +1664,18 @@ class _HomeworkDetailScreenState extends State<_HomeworkDetailScreen> {
     });
   }
 
-  void _submitUpload() {
-    if (_uploads.isEmpty || !_hasPendingUpload) return;
+  Future<void> _submitUpload() async {
+    if (_uploads.isEmpty || !_hasPendingUpload || _isSubmitting) return;
+    setState(() {
+      _isSubmitting = true;
+    });
+    await Future<void>.delayed(const Duration(milliseconds: 900));
+    if (!mounted) return;
     Navigator.of(context).pop(_HomeworkUploadBundle(files: _uploads));
   }
 
   void _removeFile(int index) {
+    if (_isSubmitting) return;
     setState(() {
       _uploads = List<_HomeworkUploadFile>.from(_uploads)..removeAt(index);
       _hasPendingUpload = true;
@@ -1682,165 +1690,212 @@ class _HomeworkDetailScreenState extends State<_HomeworkDetailScreen> {
       appBar: AppBar(
         title: const Text('Homework'),
       ),
-      body: ListView(
-        padding: const EdgeInsets.fromLTRB(16, 16, 16, 24),
+      body: Stack(
         children: [
-          Container(
-            padding: const EdgeInsets.all(18),
-            decoration: BoxDecoration(
-              gradient: LinearGradient(
-                colors: [
-                  scheme.primaryContainer,
-                  scheme.surfaceContainerHigh,
-                ],
-                begin: Alignment.topLeft,
-                end: Alignment.bottomRight,
-              ),
-              borderRadius: BorderRadius.circular(24),
-            ),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  widget.courseTitle,
-                  style: Theme.of(context).textTheme.labelLarge?.copyWith(
-                        color: scheme.onSurfaceVariant,
-                      ),
-                ),
-                const SizedBox(height: 8),
-                Text(
-                  widget.material.title,
-                  style: Theme.of(context).textTheme.headlineSmall?.copyWith(
-                        fontWeight: FontWeight.w900,
-                      ),
-                ),
-                const SizedBox(height: 10),
-                Text(
-                  'Upload your assignment file here. After upload, this homework will be marked with a check in Materials.',
-                  style: TextStyle(color: scheme.onSurfaceVariant),
-                ),
-              ],
-            ),
-          ),
-          const SizedBox(height: 18),
-          Card(
-            child: Padding(
-              padding: const EdgeInsets.all(18),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    'Assignment details',
-                    style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                          fontWeight: FontWeight.w800,
-                        ),
+          ListView(
+            padding: const EdgeInsets.fromLTRB(16, 16, 16, 24),
+            children: [
+              Container(
+                padding: const EdgeInsets.all(18),
+                decoration: BoxDecoration(
+                  gradient: LinearGradient(
+                    colors: [
+                      scheme.primaryContainer,
+                      scheme.surfaceContainerHigh,
+                    ],
+                    begin: Alignment.topLeft,
+                    end: Alignment.bottomRight,
                   ),
-                  const SizedBox(height: 12),
-                  Text('Type: ${widget.material.type.toUpperCase()}'),
-                  if (widget.material.deadline != null) ...[
-                    const SizedBox(height: 6),
+                  borderRadius: BorderRadius.circular(24),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
                     Text(
-                      'Deadline: ${DateFormat('d MMM, HH:mm').format(widget.material.deadline!)}',
+                      widget.courseTitle,
+                      style: Theme.of(context).textTheme.labelLarge?.copyWith(
+                            color: scheme.onSurfaceVariant,
+                          ),
+                    ),
+                    const SizedBox(height: 8),
+                    Text(
+                      widget.material.title,
+                      style: Theme.of(context).textTheme.headlineSmall?.copyWith(
+                            fontWeight: FontWeight.w900,
+                          ),
+                    ),
+                    const SizedBox(height: 10),
+                    Text(
+                      'Upload your assignment file here. After upload, this homework will be marked with a check in Materials.',
+                      style: TextStyle(color: scheme.onSurfaceVariant),
                     ),
                   ],
-                ],
+                ),
               ),
-            ),
-          ),
-          const SizedBox(height: 18),
-          Card(
-            child: Padding(
-              padding: const EdgeInsets.all(18),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    'Uploaded files',
-                    style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                          fontWeight: FontWeight.w800,
-                        ),
-                  ),
-                  const SizedBox(height: 12),
-                  if (_uploads.isEmpty)
-                    Text(
-                      'No files uploaded yet.',
-                      style: TextStyle(color: scheme.onSurfaceVariant),
-                    )
-                  else
-                    ...List.generate(_uploads.length, (index) {
-                      final file = _uploads[index];
-                      return Container(
-                        margin: EdgeInsets.only(
-                          bottom: index == _uploads.length - 1 ? 0 : 10,
-                        ),
-                        padding: const EdgeInsets.all(14),
-                        decoration: BoxDecoration(
-                          color: scheme.surfaceContainerHighest,
-                          borderRadius: BorderRadius.circular(16),
-                        ),
-                        child: Row(
-                          children: [
-                            Icon(
-                              Icons.description_rounded,
-                              color: scheme.primary,
+              const SizedBox(height: 18),
+              Card(
+                child: Padding(
+                  padding: const EdgeInsets.all(18),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        'Assignment details',
+                        style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                              fontWeight: FontWeight.w800,
                             ),
-                            const SizedBox(width: 10),
-                            Expanded(
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  Text(
-                                    file.fileName,
-                                    style: const TextStyle(
-                                      fontWeight: FontWeight.w700,
-                                    ),
-                                  ),
-                                  const SizedBox(height: 4),
-                                  Text(
-                                    'Uploaded ${DateFormat('d MMM, HH:mm').format(file.uploadedAt)}',
-                                    style: TextStyle(
-                                      fontSize: 12,
-                                      color: scheme.onSurfaceVariant,
-                                    ),
-                                  ),
-                                ],
-                              ),
-                            ),
-                            IconButton(
-                              tooltip: 'Remove file',
-                              onPressed: () => _removeFile(index),
-                              icon: const Icon(Icons.close_rounded),
-                            ),
-                          ],
-                        ),
-                      );
-                    }),
-                  const SizedBox(height: 16),
-                  SizedBox(
-                    width: double.infinity,
-                    child: FilledButton.icon(
-                      onPressed: _pickFile,
-                      icon: const Icon(Icons.upload_file_rounded),
-                      label: Text(
-                        _uploads.isEmpty ? 'Upload assignment' : 'Add another file',
                       ),
+                      const SizedBox(height: 12),
+                      Text('Type: ${widget.material.type.toUpperCase()}'),
+                      if (widget.material.deadline != null) ...[
+                        const SizedBox(height: 6),
+                        Text(
+                          'Deadline: ${DateFormat('d MMM, HH:mm').format(widget.material.deadline!)}',
+                        ),
+                      ],
+                    ],
+                  ),
+                ),
+              ),
+              const SizedBox(height: 18),
+              Card(
+                child: Padding(
+                  padding: const EdgeInsets.all(18),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        'Uploaded files',
+                        style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                              fontWeight: FontWeight.w800,
+                            ),
+                      ),
+                      const SizedBox(height: 12),
+                      if (_uploads.isEmpty)
+                        Text(
+                          'No files uploaded yet.',
+                          style: TextStyle(color: scheme.onSurfaceVariant),
+                        )
+                      else
+                        ...List.generate(_uploads.length, (index) {
+                          final file = _uploads[index];
+                          return Container(
+                            margin: EdgeInsets.only(
+                              bottom: index == _uploads.length - 1 ? 0 : 10,
+                            ),
+                            padding: const EdgeInsets.all(14),
+                            decoration: BoxDecoration(
+                              color: scheme.surfaceContainerHighest,
+                              borderRadius: BorderRadius.circular(16),
+                            ),
+                            child: Row(
+                              children: [
+                                Icon(
+                                  Icons.description_rounded,
+                                  color: scheme.primary,
+                                ),
+                                const SizedBox(width: 10),
+                                Expanded(
+                                  child: Column(
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.start,
+                                    children: [
+                                      Text(
+                                        file.fileName,
+                                        style: const TextStyle(
+                                          fontWeight: FontWeight.w700,
+                                        ),
+                                      ),
+                                      const SizedBox(height: 4),
+                                      Text(
+                                        'Uploaded ${DateFormat('d MMM, HH:mm').format(file.uploadedAt)}',
+                                        style: TextStyle(
+                                          fontSize: 12,
+                                          color: scheme.onSurfaceVariant,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                                IconButton(
+                                  tooltip: 'Remove file',
+                                  onPressed: _isSubmitting
+                                      ? null
+                                      : () => _removeFile(index),
+                                  icon: const Icon(Icons.close_rounded),
+                                ),
+                              ],
+                            ),
+                          );
+                        }),
+                      const SizedBox(height: 16),
+                      SizedBox(
+                        width: double.infinity,
+                        child: FilledButton.icon(
+                          onPressed: _isSubmitting ? null : _pickFile,
+                          icon: const Icon(Icons.upload_file_rounded),
+                          label: Text(
+                            _uploads.isEmpty
+                                ? 'Upload assignment'
+                                : 'Add another file',
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+                      SizedBox(
+                        width: double.infinity,
+                        child: FilledButton(
+                          onPressed:
+                              (_uploads.isEmpty ||
+                                      !_hasPendingUpload ||
+                                      _isSubmitting)
+                                  ? null
+                                  : _submitUpload,
+                          child: _isSubmitting
+                              ? const SizedBox(
+                                  height: 20,
+                                  width: 20,
+                                  child: CircularProgressIndicator(
+                                    strokeWidth: 2,
+                                    color: Colors.white,
+                                  ),
+                                )
+                              : const Text('Submit'),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ],
+          ),
+          if (_isSubmitting)
+            Positioned.fill(
+              child: AbsorbPointer(
+                child: Container(
+                  color: Colors.black.withValues(alpha: 0.12),
+                  alignment: Alignment.center,
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 18,
+                      vertical: 16,
+                    ),
+                    decoration: BoxDecoration(
+                      color: scheme.surface,
+                      borderRadius: BorderRadius.circular(18),
+                    ),
+                    child: const Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        CircularProgressIndicator(),
+                        SizedBox(height: 12),
+                        Text('Uploading homework...'),
+                      ],
                     ),
                   ),
-                  const SizedBox(height: 12),
-                  SizedBox(
-                    width: double.infinity,
-                    child: FilledButton(
-                      onPressed:
-                          (_uploads.isEmpty || !_hasPendingUpload)
-                              ? null
-                              : _submitUpload,
-                      child: const Text('Submit'),
-                    ),
-                  ),
-                ],
+                ),
               ),
             ),
-          ),
         ],
       ),
     );
