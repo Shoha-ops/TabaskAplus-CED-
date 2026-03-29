@@ -76,8 +76,6 @@ class _ComposeMessageScreenState extends State<ComposeMessageScreen> {
   final List<_SelectedRecipient> _bccRecipients = [];
   final List<_SelectedRecipient> _coAuthorRecipients = [];
 
-  bool _showCc = true;
-  bool _showBcc = false;
   bool _sending = false;
 
   Timer? _toDebounce;
@@ -515,6 +513,48 @@ class _ComposeMessageScreenState extends State<ComposeMessageScreen> {
     );
   }
 
+  Widget _buildSelectedRecipientTag(
+    _SelectedRecipient recipient,
+    ColorScheme scheme,
+  ) {
+    return ConstrainedBox(
+      constraints: const BoxConstraints(maxWidth: 280),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+        decoration: BoxDecoration(
+          color: scheme.primaryContainer,
+          borderRadius: BorderRadius.circular(16),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Flexible(
+              child: Text(
+                recipient.name,
+                softWrap: true,
+                style: TextStyle(color: scheme.onPrimaryContainer),
+              ),
+            ),
+            const SizedBox(width: 8),
+            InkWell(
+              borderRadius: BorderRadius.circular(12),
+              onTap: () => _removeRecipient(recipient.id),
+              child: Padding(
+                padding: const EdgeInsets.only(top: 1),
+                child: Icon(
+                  Icons.close_rounded,
+                  size: 18,
+                  color: scheme.onPrimaryContainer,
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   Widget _buildAddressRow(
     ColorScheme scheme, {
     required String label,
@@ -525,13 +565,7 @@ class _ComposeMessageScreenState extends State<ComposeMessageScreen> {
     Widget? trailing,
   }) {
     final chipWidgets = selected
-        .map(
-          (recipient) => Chip(
-            label: Text(recipient.name),
-            deleteIcon: const Icon(Icons.close_rounded),
-            onDeleted: () => _removeRecipient(recipient.id),
-          ),
-        )
+        .map((recipient) => _buildSelectedRecipientTag(recipient, scheme))
         .toList(growable: false);
 
     return Container(
@@ -680,19 +714,6 @@ class _ComposeMessageScreenState extends State<ComposeMessageScreen> {
               controller: _toController,
               onChanged: (value) => _onQueryChanged(value, 'to'),
               hintText: 'Add recipients',
-              trailing: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  TextButton(
-                    onPressed: () => setState(() => _showCc = !_showCc),
-                    child: Text(_showCc ? 'Hide Cc' : 'Show Cc'),
-                  ),
-                  TextButton(
-                    onPressed: () => setState(() => _showBcc = !_showBcc),
-                    child: Text(_showBcc ? 'Hide Bcc' : 'Show Bcc'),
-                  ),
-                ],
-              ),
             ),
             _buildResultsSection(
               toResults,
@@ -705,50 +726,46 @@ class _ComposeMessageScreenState extends State<ComposeMessageScreen> {
                 (value) => _toQuery = value,
               ),
             ),
-            if (_showCc) ...[
-              const SizedBox(height: 12),
-              _buildAddressRow(
-                scheme,
-                label: 'Cc',
-                selected: _ccRecipients,
-                controller: _ccController,
-                onChanged: (value) => _onQueryChanged(value, 'cc'),
-                hintText: 'Add Cc',
+            const SizedBox(height: 12),
+            _buildAddressRow(
+              scheme,
+              label: 'Cc',
+              selected: _ccRecipients,
+              controller: _ccController,
+              onChanged: (value) => _onQueryChanged(value, 'cc'),
+              hintText: 'Add Cc',
+            ),
+            _buildResultsSection(
+              ccResults,
+              query: _ccQuery,
+              isSelected: (id) => _ccRecipients.any((item) => item.id == id),
+              onSelect: (recipient) => _addRecipient(
+                recipient,
+                _ccRecipients,
+                _ccController,
+                (value) => _ccQuery = value,
               ),
-              _buildResultsSection(
-                ccResults,
-                query: _ccQuery,
-                isSelected: (id) => _ccRecipients.any((item) => item.id == id),
-                onSelect: (recipient) => _addRecipient(
-                  recipient,
-                  _ccRecipients,
-                  _ccController,
-                  (value) => _ccQuery = value,
-                ),
+            ),
+            const SizedBox(height: 12),
+            _buildAddressRow(
+              scheme,
+              label: 'Bcc',
+              selected: _bccRecipients,
+              controller: _bccController,
+              onChanged: (value) => _onQueryChanged(value, 'bcc'),
+              hintText: 'Add Bcc',
+            ),
+            _buildResultsSection(
+              bccResults,
+              query: _bccQuery,
+              isSelected: (id) => _bccRecipients.any((item) => item.id == id),
+              onSelect: (recipient) => _addRecipient(
+                recipient,
+                _bccRecipients,
+                _bccController,
+                (value) => _bccQuery = value,
               ),
-            ],
-            if (_showBcc) ...[
-              const SizedBox(height: 12),
-              _buildAddressRow(
-                scheme,
-                label: 'Bcc',
-                selected: _bccRecipients,
-                controller: _bccController,
-                onChanged: (value) => _onQueryChanged(value, 'bcc'),
-                hintText: 'Add Bcc',
-              ),
-              _buildResultsSection(
-                bccResults,
-                query: _bccQuery,
-                isSelected: (id) => _bccRecipients.any((item) => item.id == id),
-                onSelect: (recipient) => _addRecipient(
-                  recipient,
-                  _bccRecipients,
-                  _bccController,
-                  (value) => _bccQuery = value,
-                ),
-              ),
-            ],
+            ),
             const SizedBox(height: 12),
             _buildAddressRow(
               scheme,
